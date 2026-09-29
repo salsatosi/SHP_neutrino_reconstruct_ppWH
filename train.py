@@ -12,6 +12,14 @@ from torch.utils.data import TensorDataset, DataLoader
 import datetime
 import joblib
 import json
+import torch.nn.functional as F
+
+ACTIVATION_MAP = {
+    "silu": F.silu,
+    "relu": F.relu,
+    "gelu": F.gelu,
+    "elu": F.elu,
+}
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -79,12 +87,10 @@ FEATURES = ["ChargedLep_E",
             "NLightJets",
             "SumLightJets_E",
             "SumLightJets_Pt",
-            "SumLightJets_eta"]
-
-ANGLE_FEATURES = ["ChargedLep_Phi",
-                  "Higgs_phi",
-                  "MET_Phi",
-                  "SumLightJets_phi"]
+            "SumLightJets_eta",
+            'Relative_Phi_Lep_Higgs',
+            'Relative_Phi_Lep_MET',
+            'Relative_Phi_Lep_Jet']
 
 TARGET = ["True_nu_eta"]
 
@@ -98,11 +104,6 @@ def read_file(filename,FEATURES,TARGET):
     :return:
     """
     df = pd.read_csv(filename,encoding_errors='ignore')
-
-    for col in ANGLE_FEATURES:
-        df[f'{col}_sin'] = np.sin(df[col])
-        df[f'{col}_cos'] = np.cos(df[col])
-        FEATURES.extend([f'{col}_sin',f'{col}_cos'])
 
     features_data = df[FEATURES].values
     target_data = df[TARGET].values
@@ -138,12 +139,8 @@ def split_data(features, target, hyperparameters):
     features_train = scaler_features.fit_transform(features_train)
     features_val = scaler_features.transform(features_val)
     features_test = scaler_features.transform(features_test)
-    target_train = scaler_target.fit_transform(target_train)
-    target_val = scaler_target.transform(target_val)
-    target_test = scaler_target.transform(target_test)
 
     joblib.dump(scaler_features, f"scalers/scaler_features_{time_str}.joblib")
-    joblib.dump(scaler_target, f"scalers/scaler_target_{time_str}.joblib")
 
     features_train_tensor = torch.tensor(features_train,dtype=torch.float32)
     features_val_tensor = torch.tensor(features_val,dtype=torch.float32)
@@ -171,6 +168,8 @@ def normalizing_flow(features,context_features,hyperparameters):
     """
     base_gaussian = StandardNormal(shape=[features])
     transforms = []
+    act_str = hyperparameters["flow"].get("activation", "relu")
+    activation_fn = ACTIVATION_MAP.get(act_str.lower(), F.relu)
 
     for _ in range(hyperparameters["flow"]["n_layers"]):
         transforms.append(
@@ -181,7 +180,12 @@ def normalizing_flow(features,context_features,hyperparameters):
                 num_bins=hyperparameters["flow"]["num_bins"],
                 tails=hyperparameters["flow"]["tails"],
                 tail_bound=hyperparameters["flow"]["tail_bound"],
-                num_blocks=hyperparameters["flow"]["num_blocks"]
+                num_blocks=hyperparameters["flow"]["num_blocks"],
+                dropout_probability=hyperparameters["flow"]["dropout_probability"],
+                activation=activation_fn,
+                min_bin_width=hyperparameters["flow"]["min_bin_width"],
+                min_bin_height=hyperparameters["flow"]["min_bin_height"],
+                min_derivative=hyperparameters["flow"]["min_derivative"],
             )
         )
 
@@ -207,11 +211,10 @@ def train_model(flow,train_dataset,val_dataset,hyperparameters):
         flow.parameters(),
         lr=hyperparameters["training"]["learning_rate"],
         weight_decay=hyperparameters["training"]["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        mode=hyperparameters["scheduler"]["mode"],
-        factor=hyperparameters["scheduler"]["factor"],
-        patience=hyperparameters["scheduler"]["patience"]
+        T_max=hyperparameters["training"]["epochs"],
+        eta_min=hyperparameters["scheduler"]["eta_min"]
     )
 
     for epoch in range(hyperparameters["training"]["epochs"]):
@@ -219,6 +222,10 @@ def train_model(flow,train_dataset,val_dataset,hyperparameters):
         total_train_loss = 0
         batch_idx = 0
         for batch_features, batch_targets in train_loader:
+            if flow.training and hyperparameters["training"]["target_noise_std"] > 0:
+                noise = torch.randn_like(batch_targets) * hyperparameters["training"]["target_noise_std"]
+                batch_targets = batch_targets + noise
+
             batch_features = batch_features.to(device)
             batch_targets = batch_targets.to(device)
 
@@ -245,6 +252,7 @@ def train_model(flow,train_dataset,val_dataset,hyperparameters):
         total_val_loss = 0
         with torch.no_grad():
             for batch_features, batch_targets in val_loader:
+
                 batch_features = batch_features.to(device)
                 batch_targets = batch_targets.to(device)
                 log_prob = flow.log_prob(inputs=batch_targets, context=batch_features)
@@ -252,7 +260,7 @@ def train_model(flow,train_dataset,val_dataset,hyperparameters):
                 total_val_loss += loss.item()
 
         avg_val_loss = total_val_loss / len(val_loader)
-        scheduler.step(avg_val_loss)
+        scheduler.step()
 
         print(
             f"Epoch [{epoch + 1:02d}/{hyperparameters['training']['epochs']}] | "
@@ -288,13 +296,13 @@ def test_model(flow,test_dataset,hyperparameters):
 
 
 if __name__ == "__main__":
-    hyperparameter_file = "hyperparameters_settings.json"
+    hyperparameter_file = "config.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     torch.manual_seed(hyperparameters["random_seed"])
     save_hyperparameters(hyperparameters)
     print('Hyperparameters saved.')
 
-    n_features = len(FEATURES) + len(ANGLE_FEATURES)*2
+    n_features = len(FEATURES)
     n_target = len(TARGET)
     features, target = read_file("data.csv",FEATURES,TARGET)
     train_dataset, val_dataset, test_dataset = split_data(features, target, hyperparameters)
