@@ -675,107 +675,12 @@ def plot_event_posteriors(
     plt.tight_layout()
     plt.show()
 
-def latent_space_test(
-        flow, dataset, model_name, batch_size=512, num_bins=60, range_z=(-4.0, 4.0)
-):
-    flow.load_state_dict(torch.load(model_name, map_location=device))
-    flow.eval()
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-
-    z_values = []
-
-    with torch.no_grad():
-        for features, targets in loader:
-            features = features.to(device)
-            targets = targets.to(device)
-
-            # Forward map: target (eta) -> latent (z)
-            # z has shape [batch_size, 1]
-            z, _ = flow._transform(targets, context=features)
-
-            z_values.append(z.squeeze(-1).cpu().numpy())
-
-    z_values = np.concatenate(z_values)
-
-    # --------------------------------
-    # Statistical Metrics
-    # --------------------------------
-    mean_z = np.mean(z_values)
-    std_z = np.std(z_values)
-    skew_z = skew(z_values)
-    kurt_z = kurtosis(z_values)  # Fisher kurtosis (0.0 for standard normal)
-
-    ks_stat, p_value = kstest(z_values, "norm")
-
-    print("\nLatent Space Mapping Test (z = f(eta; x))")
-    print("-" * 50)
-    print(f"Number of events    : {len(z_values)}")
-    print(f"Mean (ideal: 0.0)   : {mean_z:+.6f}")
-    print(f"Std  (ideal: 1.0)   : {std_z:.6f}")
-    print(f"Skew (ideal: 0.0)   : {skew_z:+.6f}")
-    print(f"Excess Kurtosis (0) : {kurt_z:+.6f}")
-    print(f"KS statistic        : {ks_stat:.6f}")
-    print(f"KS p-value          : {p_value:.6e}")
-
-    # --------------------------------
-    # Diagnostic Plots
-    # --------------------------------
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Panel 1: Histogram vs Unit Gaussian
-    x_axis = np.linspace(range_z[0], range_z[1], 400)
-
-    axes[0].hist(
-        z_values,
-        bins=num_bins,
-        range=range_z,
-        density=True,
-        alpha=0.6,
-        color="royalblue",
-        label=r"Encoded $z = f(\eta_\nu; x)$",
-    )
-    axes[0].plot(
-        x_axis,
-        norm.pdf(x_axis),
-        "r--",
-        linewidth=2,
-        label=r"Target $\mathcal{N}(0, 1)$",
-    )
-    axes[0].set_xlabel(r"Latent variable $z$", fontsize=11)
-    axes[0].set_ylabel("Probability Density", fontsize=11)
-    axes[0].set_title("Latent Space Distribution", fontsize=12)
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(fontsize=9)
-
-    # Panel 2: Quantile-Quantile (Q-Q) Plot
-    # Shows deviations in the tails (crucial for physical bounds)
-    res = probplot(z_values, dist="norm", plot=axes[1])
-
-    # Style points and regression line
-    axes[1].get_lines()[0].set_markerfacecolor("royalblue")
-    axes[1].get_lines()[0].set_markeredgecolor("none")
-    axes[1].get_lines()[0].set_markersize(3.0)
-    axes[1].get_lines()[0].set_alpha(0.4)
-    axes[1].get_lines()[1].set_color("red")
-    axes[1].get_lines()[1].set_linewidth(1.8)
-
-    axes[1].set_title("Normal Q-Q Plot", fontsize=12)
-    axes[1].grid(True, alpha=0.3)
-
-    plt.suptitle("Flow Base Distribution Verification", fontsize=13, y=1.02)
-    plt.tight_layout()
-    plt.show()
-
-    return {
-        "z": z_values,
-        "mean": mean_z,
-        "std": std_z,
-        "skew": skew_z,
-        "kurtosis": kurt_z,
-        "ks_stat": ks_stat,
-        "p_value": p_value,
-    }
+def compute_mode(data, bins=100, data_range=None):
+    """Calculates the mode (peak) of a continuous distribution using histogram binning."""
+    counts, bin_edges = np.histogram(data, bins=bins, range=data_range)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    return bin_centers[np.argmax(counts)]
 
 
 def invariant_mass_reconstruction(
@@ -826,7 +731,6 @@ def invariant_mass_reconstruction(
 
     # Helper function to compute invariant mass from eta_nu
     def compute_masses(eta_nu):
-        # 1D array: [n_events]
         if eta_nu.ndim == 1:
             px_nu = met * np.cos(phi_nu)
             py_nu = met * np.sin(phi_nu)
@@ -836,11 +740,8 @@ def invariant_mass_reconstruction(
             p4_l = p4_lep
             p4_higgs = p4_h
 
-        # 2D array: [n_events, num_samples]
         elif eta_nu.ndim == 2:
             n_s = eta_nu.shape[1]
-
-            # Broadcast px and py across all samples
             px_nu = np.repeat((met * np.cos(phi_nu))[:, None], n_s, axis=1)
             py_nu = np.repeat((met * np.sin(phi_nu))[:, None], n_s, axis=1)
             pz_nu = met[:, None] * np.sinh(eta_nu)
@@ -852,22 +753,21 @@ def invariant_mass_reconstruction(
         else:
             raise ValueError("eta_nu must be 1D or 2D array")
 
-        # Now all components have the exact same shape
         p4_nu = np.stack([px_nu, py_nu, pz_nu, e_nu], axis=-1)
 
         # W Boson invariant mass
         p4_w = p4_l + p4_nu
         m_w_sq = (
-            p4_w[..., 3] ** 2
-            - (p4_w[..., 0] ** 2 + p4_w[..., 1] ** 2 + p4_w[..., 2] ** 2)
+                p4_w[..., 3] ** 2
+                - (p4_w[..., 0] ** 2 + p4_w[..., 1] ** 2 + p4_w[..., 2] ** 2)
         )
         m_w = np.sqrt(np.maximum(0, m_w_sq))
 
         # Total WH invariant mass
         p4_wh = p4_w + p4_higgs
         m_wh_sq = (
-            p4_wh[..., 3] ** 2
-            - (p4_wh[..., 0] ** 2 + p4_wh[..., 1] ** 2 + p4_wh[..., 2] ** 2)
+                p4_wh[..., 3] ** 2
+                - (p4_wh[..., 0] ** 2 + p4_wh[..., 1] ** 2 + p4_wh[..., 2] ** 2)
         )
         m_wh = np.sqrt(np.maximum(0, m_wh_sq))
 
@@ -876,7 +776,7 @@ def invariant_mass_reconstruction(
     # 4. Compute True Masses
     m_w_true, m_wh_true = compute_masses(true_eta)
 
-    # 5. Compute Flow-Sampled Masses (Posterior Marginalization)
+    # 5. Compute Flow-Sampled Masses
     flow_samples = []
     features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
     loader = DataLoader(
@@ -886,14 +786,24 @@ def invariant_mass_reconstruction(
     with torch.no_grad():
         for (batch_x,) in loader:
             batch_x = batch_x.to(device)
-            # Sample shape: [batch_size, num_samples, 1]
             s = flow.sample(num_samples=num_samples, context=batch_x)
             flow_samples.append(s.squeeze(-1).cpu().numpy())
 
-    eta_samples = np.concatenate(flow_samples, axis=0)  # [n_events, num_samples]
+    eta_samples = np.concatenate(flow_samples, axis=0)
     m_w_sample, m_wh_sample = compute_masses(eta_samples)
     m_w_sampled_flat = m_w_sample.flatten()
     m_wh_sampled_flat = m_wh_sample.flatten()
+
+    # --- Compute Modes ---
+    mw_range = (40, 120)
+    min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
+    wh_range = (min_wh, max_wh)
+
+    mode_mw_true = compute_mode(m_w_true, bins=80, data_range=mw_range)
+    mode_mw_flow = compute_mode(m_w_sampled_flat, bins=80, data_range=mw_range)
+
+    mode_mwh_true = compute_mode(m_wh_true, bins=80, data_range=wh_range)
+    mode_mwh_flow = compute_mode(m_wh_sampled_flat, bins=80, data_range=wh_range)
 
     # 6. Plotting
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -902,21 +812,21 @@ def invariant_mass_reconstruction(
     axes[0].hist(
         m_w_true,
         bins=80,
-        range=(40, 120),
+        range=mw_range,
         density=True,
         histtype="step",
         linewidth=2,
         color="black",
-        label=r"True $\eta_\nu$",
+        label=rf"True $\eta_\nu$ (Mode: {mode_mw_true:.1f} GeV)",
     )
     axes[0].hist(
         m_w_sampled_flat,
         bins=80,
-        range=(40, 120),
+        range=mw_range,
         density=True,
         alpha=0.5,
         color="royalblue",
-        label=r"Flow $p(\eta_\nu|x)$ Samples",
+        label=rf"Flow Samples (Mode: {mode_mw_flow:.1f} GeV)",
     )
     axes[0].axvline(
         80.379,
@@ -925,34 +835,33 @@ def invariant_mass_reconstruction(
         label=r"Nominal $m_W$ (80.4 GeV)",
     )
     axes[0].set_xlabel(r"$m_W$ [GeV]", fontsize=11)
-    axes[0].set_ylabel("Normalized Density", fontsize=11)
+    axes[0].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
     axes[0].set_title(r"$W$ Boson Invariant Mass Reconstruction", fontsize=12)
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(fontsize=9)
 
     # --- Plot mWH ---
-    min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
     axes[1].hist(
         m_wh_true,
         bins=80,
-        range=(min_wh, max_wh),
+        range=wh_range,
         density=True,
         histtype="step",
         linewidth=2,
         color="black",
-        label=r"True $\eta_\nu$",
+        label=rf"True $\eta_\nu$ (Mode: {mode_mwh_true:.1f} GeV)",
     )
     axes[1].hist(
         m_wh_sampled_flat,
         bins=80,
-        range=(min_wh, max_wh),
+        range=wh_range,
         density=True,
         alpha=0.5,
         color="darkorange",
-        label=r"Flow $p(\eta_\nu|x)$ Samples",
+        label=rf"Flow Samples (Mode: {mode_mwh_flow:.1f} GeV)",
     )
     axes[1].set_xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
-    axes[1].set_ylabel("Normalized Density", fontsize=11)
+    axes[1].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
     axes[1].set_title(r"Total $WH$ Invariant Mass Reconstruction", fontsize=12)
     axes[1].grid(True, alpha=0.3)
     axes[1].legend(fontsize=9)
@@ -961,19 +870,19 @@ def invariant_mass_reconstruction(
     plt.show()
 
     # Print summary statistics
-    print("\nInvariant Mass Reconstruction Metrics")
+    print("\nInvariant Mass Reconstruction")
     print("-" * 50)
-    print(f"True mW Peak (Median)      : {np.median(m_w_true):.2f} GeV")
-    print(f"Flow Reconstructed mW Peak : {np.median(m_w_sampled_flat):.2f} GeV")
+    print(f"True mW Peak (Mode)        : {mode_mw_true:.2f} GeV")
+    print(f"Flow Reconstructed mW Peak : {mode_mw_flow:.2f} GeV")
     print(
         f"mW Resolution (IQR / 2)     : {0.5 * (np.percentile(m_w_sampled_flat, 75) - np.percentile(m_w_sampled_flat, 25)):.2f} GeV"
     )
-    print(f"True mWH Peak (Median)     : {np.median(m_wh_true):.2f} GeV")
-    print(f"Flow Reconstructed mWH Peak: {np.median(m_wh_sampled_flat):.2f} GeV")
+    print(f"True mWH Peak (Mode)       : {mode_mwh_true:.2f} GeV")
+    print(f"Flow Reconstructed mWH Peak: {mode_mwh_flow:.2f} GeV")
 
 
 if __name__ == "__main__":
-    time = '20261001-003138'
+    time = '20261001-224739'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -1006,112 +915,102 @@ if __name__ == "__main__":
         hyperparameters=hyperparameters)
 
 
-    # ----------------------------
-    # Coverage test
-
-    coverage = interval_coverage(
-        flow=flow,
-        dataset=test_dataset,
-        levels=(0.50,0.68,0.90,0.95),
-        model_name=model_name
-    )
-
-    # ----------------------------
-    # Shuffle test
-
-    normal_nll, shuffled_nll = shuffled_context_nll(
-        flow=flow,
-        dataset=test_dataset,
-        batch_size=512,
-        model_name=model_name
-    )
-
-    # ----------------------------
-    # Conditional Calibration
-
-    # index = 'ChargedLep_E'
-    # binned_coverage(
+    # # ----------------------------
+    # # Coverage test
+    #
+    # coverage = interval_coverage(
     #     flow=flow,
     #     dataset=test_dataset,
-    #     feature_index=FEATURES.index(index),
+    #     levels=(0.50,0.68,0.90,0.95),
+    #     model_name=model_name
+    # )
+    #
+    # # ----------------------------
+    # # Shuffle test
+    #
+    # normal_nll, shuffled_nll = shuffled_context_nll(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     batch_size=512,
+    #     model_name=model_name
+    # )
+    #
+    # # ----------------------------
+    # # Conditional Calibration
+    #
+    # # index = 'ChargedLep_E'
+    # # binned_coverage(
+    # #     flow=flow,
+    # #     dataset=test_dataset,
+    # #     feature_index=FEATURES.index(index),
+    # #     model_name=model_name,
+    # # )
+    #
+    # # ----------------------------
+    # # PIT Value test
+    #
+    # pit_values = pit_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
     #     model_name=model_name,
+    #     batch_size=512,
+    #     num_bins=20
+    # )
+    #
+    # # ----------------------------
+    # # Point Reconstruction test
+    #
+    # results = point_reconstruction_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     num_samples=2000,
+    #     estimator="mode"
+    # )
+    #
+    # residuals = results["residual"]
+    #
+    # plt.figure(figsize=(8, 5))
+    #
+    # plt.hist(
+    #     residuals,
+    #     bins=100,
+    #     density=True
+    # )
+    #
+    # plt.axvline(
+    #     0,
+    #     linestyle="--",
+    #     label="Zero residual"
+    # )
+    #
+    # plt.xlabel(
+    #     r"$\hat{\eta}_\nu - \eta_{\nu,\mathrm{true}}$"
+    # )
+    # plt.ylabel("Density")
+    # plt.title("Neutrino eta reconstruction residual")
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.show()
+    #
+    # # ----------------------------
+    # # Multimodality / Posterior Shape Visualization
+    #
+    # df = pd.read_csv('data.csv',encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # plot_event_posteriors(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
+    #     grid_range=(-5.0, 5.0),
+    #     num_grid_points=1000,
     # )
 
-    # ----------------------------
-    # PIT Value test
-
-    pit_values = pit_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        batch_size=512,
-        num_bins=20
-    )
-
-    # ----------------------------
-    # Point Reconstruction test
-
-    results = point_reconstruction_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        num_samples=2000,
-        estimator="mode"
-    )
-
-    residuals = results["residual"]
-
-    plt.figure(figsize=(8, 5))
-
-    plt.hist(
-        residuals,
-        bins=100,
-        density=True
-    )
-
-    plt.axvline(
-        0,
-        linestyle="--",
-        label="Zero residual"
-    )
-
-    plt.xlabel(
-        r"$\hat{\eta}_\nu - \eta_{\nu,\mathrm{true}}$"
-    )
-    plt.ylabel("Density")
-    plt.title("Neutrino eta reconstruction residual")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-    # ----------------------------
-    # Multimodality / Posterior Shape Visualization
-
-    df = pd.read_csv('data.csv',encoding_errors='ignore')
-    nb1_nu_eta = df['NB1_nu_eta'].values
-    nb2_nu_eta = df['NB2_nu_eta'].values
-
-    plot_event_posteriors(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nb1_nu_eta=nb1_nu_eta,
-        nb2_nu_eta=nb2_nu_eta,
-        num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
-        grid_range=(-5.0, 5.0),
-        num_grid_points=1000,
-    )
-
-    # ----------------------------
-    # Latent Space Mapping Test
-
-    latent_results = latent_space_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        batch_size=512,
-        num_bins=60,
-    )
 
     # ----------------------------
     # Invariant Mass Reconstruction Test
