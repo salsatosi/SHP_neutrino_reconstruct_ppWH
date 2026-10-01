@@ -14,6 +14,7 @@ import joblib
 import json
 import torch.nn.functional as F
 
+
 ACTIVATION_MAP = {
     "silu": F.silu,
     "relu": F.relu,
@@ -134,28 +135,26 @@ def split_data(features, target, hyperparameters):
 
     # Fit Scalers
     scaler_features = StandardScaler()
-    scaler_target = StandardScaler()
 
     features_train = scaler_features.fit_transform(features_train)
     features_val = scaler_features.transform(features_val)
-    features_test = scaler_features.transform(features_test)
 
     joblib.dump(scaler_features, f"scalers/scaler_features_{time_str}.joblib")
 
     features_train_tensor = torch.tensor(features_train,dtype=torch.float32)
     features_val_tensor = torch.tensor(features_val,dtype=torch.float32)
-    features_test_tensor = torch.tensor(features_test,dtype=torch.float32)
+
 
     target_train_tensor = torch.tensor(target_train,dtype=torch.float32)
     target_val_tensor = torch.tensor(target_val,dtype=torch.float32)
-    target_test_tensor = torch.tensor(target_test,dtype=torch.float32)
+
 
     train_dataset = TensorDataset(features_train_tensor, target_train_tensor)
     val_dataset = TensorDataset(features_val_tensor, target_val_tensor)
-    test_dataset = TensorDataset(features_test_tensor, target_test_tensor)
 
 
-    return train_dataset, val_dataset, test_dataset
+
+    return train_dataset, val_dataset
 
 
 def normalizing_flow(features,context_features,hyperparameters):
@@ -305,7 +304,7 @@ if __name__ == "__main__":
     n_features = len(FEATURES)
     n_target = len(TARGET)
     features, target = read_file("data.csv",FEATURES,TARGET)
-    train_dataset, val_dataset, test_dataset = split_data(features, target, hyperparameters)
+    train_dataset, val_dataset = split_data(features, target, hyperparameters)
     flow = normalizing_flow(
         features=n_target,
         context_features=n_features,
@@ -315,4 +314,3 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         hyperparameters=hyperparameters)
-    test_model(flow, test_dataset, hyperparameters)

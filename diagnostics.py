@@ -1,4 +1,4 @@
-from train_v2 import (
+from train import (
     device, FEATURES, TARGET, read_file, normalizing_flow, load_hyperparameters)
 import torch
 from torch.utils.data import TensorDataset, DataLoader
@@ -7,8 +7,7 @@ import matplotlib.pyplot as plt
 import joblib
 import datetime
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from scipy.stats import kstest
+from scipy.stats import kstest, kurtosis, norm, probplot, skew
 import pandas as pd
 
 
@@ -676,10 +675,305 @@ def plot_event_posteriors(
     plt.tight_layout()
     plt.show()
 
+def latent_space_test(
+        flow, dataset, model_name, batch_size=512, num_bins=60, range_z=(-4.0, 4.0)
+):
+    flow.load_state_dict(torch.load(model_name, map_location=device))
+    flow.eval()
+
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    z_values = []
+
+    with torch.no_grad():
+        for features, targets in loader:
+            features = features.to(device)
+            targets = targets.to(device)
+
+            # Forward map: target (eta) -> latent (z)
+            # z has shape [batch_size, 1]
+            z, _ = flow._transform(targets, context=features)
+
+            z_values.append(z.squeeze(-1).cpu().numpy())
+
+    z_values = np.concatenate(z_values)
+
+    # --------------------------------
+    # Statistical Metrics
+    # --------------------------------
+    mean_z = np.mean(z_values)
+    std_z = np.std(z_values)
+    skew_z = skew(z_values)
+    kurt_z = kurtosis(z_values)  # Fisher kurtosis (0.0 for standard normal)
+
+    ks_stat, p_value = kstest(z_values, "norm")
+
+    print("\nLatent Space Mapping Test (z = f(eta; x))")
+    print("-" * 50)
+    print(f"Number of events    : {len(z_values)}")
+    print(f"Mean (ideal: 0.0)   : {mean_z:+.6f}")
+    print(f"Std  (ideal: 1.0)   : {std_z:.6f}")
+    print(f"Skew (ideal: 0.0)   : {skew_z:+.6f}")
+    print(f"Excess Kurtosis (0) : {kurt_z:+.6f}")
+    print(f"KS statistic        : {ks_stat:.6f}")
+    print(f"KS p-value          : {p_value:.6e}")
+
+    # --------------------------------
+    # Diagnostic Plots
+    # --------------------------------
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Panel 1: Histogram vs Unit Gaussian
+    x_axis = np.linspace(range_z[0], range_z[1], 400)
+
+    axes[0].hist(
+        z_values,
+        bins=num_bins,
+        range=range_z,
+        density=True,
+        alpha=0.6,
+        color="royalblue",
+        label=r"Encoded $z = f(\eta_\nu; x)$",
+    )
+    axes[0].plot(
+        x_axis,
+        norm.pdf(x_axis),
+        "r--",
+        linewidth=2,
+        label=r"Target $\mathcal{N}(0, 1)$",
+    )
+    axes[0].set_xlabel(r"Latent variable $z$", fontsize=11)
+    axes[0].set_ylabel("Probability Density", fontsize=11)
+    axes[0].set_title("Latent Space Distribution", fontsize=12)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=9)
+
+    # Panel 2: Quantile-Quantile (Q-Q) Plot
+    # Shows deviations in the tails (crucial for physical bounds)
+    res = probplot(z_values, dist="norm", plot=axes[1])
+
+    # Style points and regression line
+    axes[1].get_lines()[0].set_markerfacecolor("royalblue")
+    axes[1].get_lines()[0].set_markeredgecolor("none")
+    axes[1].get_lines()[0].set_markersize(3.0)
+    axes[1].get_lines()[0].set_alpha(0.4)
+    axes[1].get_lines()[1].set_color("red")
+    axes[1].get_lines()[1].set_linewidth(1.8)
+
+    axes[1].set_title("Normal Q-Q Plot", fontsize=12)
+    axes[1].grid(True, alpha=0.3)
+
+    plt.suptitle("Flow Base Distribution Verification", fontsize=13, y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "z": z_values,
+        "mean": mean_z,
+        "std": std_z,
+        "skew": skew_z,
+        "kurtosis": kurt_z,
+        "ks_stat": ks_stat,
+        "p_value": p_value,
+    }
+
+
+def invariant_mass_reconstruction(
+    flow,
+    features_test_scaled,
+    target_test,
+    scaler_features,
+    model_name,
+    num_samples=50,
+    batch_size=512,
+):
+    flow.load_state_dict(torch.load(model_name, map_location=device))
+    flow.eval()
+
+    # 1. Unscale features to physical units (GeV, radians)
+    features_unscaled = scaler_features.inverse_transform(features_test_scaled)
+
+    # 2. Extract kinematics
+    lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
+    lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
+    lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+
+    met = features_unscaled[:, FEATURES.index("MET")]
+    phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
+
+    higgs_pt = features_unscaled[:, FEATURES.index("Higgs_pT")]
+    higgs_eta = features_unscaled[:, FEATURES.index("Higgs_eta")]
+    higgs_e = features_unscaled[:, FEATURES.index("Higgs_E")]
+    phi_h = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_Higgs")]
+
+    true_eta = target_test.flatten()
+
+    # 3. Base 4-momenta for Lepton (phi_lep = 0) and Higgs
+    p4_lep = np.stack(
+        [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
+        axis=-1,
+    )
+
+    p4_h = np.stack(
+        [
+            higgs_pt * np.cos(phi_h),
+            higgs_pt * np.sin(phi_h),
+            higgs_pt * np.sinh(higgs_eta),
+            higgs_e,
+        ],
+        axis=-1,
+    )
+
+    # Helper function to compute invariant mass from eta_nu
+    def compute_masses(eta_nu):
+        # 1D array: [n_events]
+        if eta_nu.ndim == 1:
+            px_nu = met * np.cos(phi_nu)
+            py_nu = met * np.sin(phi_nu)
+            pz_nu = met * np.sinh(eta_nu)
+            e_nu = met * np.cosh(eta_nu)
+
+            p4_l = p4_lep
+            p4_higgs = p4_h
+
+        # 2D array: [n_events, num_samples]
+        elif eta_nu.ndim == 2:
+            n_s = eta_nu.shape[1]
+
+            # Broadcast px and py across all samples
+            px_nu = np.repeat((met * np.cos(phi_nu))[:, None], n_s, axis=1)
+            py_nu = np.repeat((met * np.sin(phi_nu))[:, None], n_s, axis=1)
+            pz_nu = met[:, None] * np.sinh(eta_nu)
+            e_nu = met[:, None] * np.cosh(eta_nu)
+
+            p4_l = p4_lep[:, None, :]
+            p4_higgs = p4_h[:, None, :]
+
+        else:
+            raise ValueError("eta_nu must be 1D or 2D array")
+
+        # Now all components have the exact same shape
+        p4_nu = np.stack([px_nu, py_nu, pz_nu, e_nu], axis=-1)
+
+        # W Boson invariant mass
+        p4_w = p4_l + p4_nu
+        m_w_sq = (
+            p4_w[..., 3] ** 2
+            - (p4_w[..., 0] ** 2 + p4_w[..., 1] ** 2 + p4_w[..., 2] ** 2)
+        )
+        m_w = np.sqrt(np.maximum(0, m_w_sq))
+
+        # Total WH invariant mass
+        p4_wh = p4_w + p4_higgs
+        m_wh_sq = (
+            p4_wh[..., 3] ** 2
+            - (p4_wh[..., 0] ** 2 + p4_wh[..., 1] ** 2 + p4_wh[..., 2] ** 2)
+        )
+        m_wh = np.sqrt(np.maximum(0, m_wh_sq))
+
+        return m_w, m_wh
+
+    # 4. Compute True Masses
+    m_w_true, m_wh_true = compute_masses(true_eta)
+
+    # 5. Compute Flow-Sampled Masses (Posterior Marginalization)
+    flow_samples = []
+    features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for (batch_x,) in loader:
+            batch_x = batch_x.to(device)
+            # Sample shape: [batch_size, num_samples, 1]
+            s = flow.sample(num_samples=num_samples, context=batch_x)
+            flow_samples.append(s.squeeze(-1).cpu().numpy())
+
+    eta_samples = np.concatenate(flow_samples, axis=0)  # [n_events, num_samples]
+    m_w_sample, m_wh_sample = compute_masses(eta_samples)
+    m_w_sampled_flat = m_w_sample.flatten()
+    m_wh_sampled_flat = m_wh_sample.flatten()
+
+    # 6. Plotting
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # --- Plot mW ---
+    axes[0].hist(
+        m_w_true,
+        bins=80,
+        range=(40, 120),
+        density=True,
+        histtype="step",
+        linewidth=2,
+        color="black",
+        label=r"True $\eta_\nu$",
+    )
+    axes[0].hist(
+        m_w_sampled_flat,
+        bins=80,
+        range=(40, 120),
+        density=True,
+        alpha=0.5,
+        color="royalblue",
+        label=r"Flow $p(\eta_\nu|x)$ Samples",
+    )
+    axes[0].axvline(
+        80.379,
+        color="red",
+        linestyle="--",
+        label=r"Nominal $m_W$ (80.4 GeV)",
+    )
+    axes[0].set_xlabel(r"$m_W$ [GeV]", fontsize=11)
+    axes[0].set_ylabel("Normalized Density", fontsize=11)
+    axes[0].set_title(r"$W$ Boson Invariant Mass Reconstruction", fontsize=12)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=9)
+
+    # --- Plot mWH ---
+    min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
+    axes[1].hist(
+        m_wh_true,
+        bins=80,
+        range=(min_wh, max_wh),
+        density=True,
+        histtype="step",
+        linewidth=2,
+        color="black",
+        label=r"True $\eta_\nu$",
+    )
+    axes[1].hist(
+        m_wh_sampled_flat,
+        bins=80,
+        range=(min_wh, max_wh),
+        density=True,
+        alpha=0.5,
+        color="darkorange",
+        label=r"Flow $p(\eta_\nu|x)$ Samples",
+    )
+    axes[1].set_xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
+    axes[1].set_ylabel("Normalized Density", fontsize=11)
+    axes[1].set_title(r"Total $WH$ Invariant Mass Reconstruction", fontsize=12)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary statistics
+    print("\nInvariant Mass Reconstruction Metrics")
+    print("-" * 50)
+    print(f"True mW Peak (Median)      : {np.median(m_w_true):.2f} GeV")
+    print(f"Flow Reconstructed mW Peak : {np.median(m_w_sampled_flat):.2f} GeV")
+    print(
+        f"mW Resolution (IQR / 2)     : {0.5 * (np.percentile(m_w_sampled_flat, 75) - np.percentile(m_w_sampled_flat, 25)):.2f} GeV"
+    )
+    print(f"True mWH Peak (Median)     : {np.median(m_wh_true):.2f} GeV")
+    print(f"Flow Reconstructed mWH Peak: {np.median(m_wh_sampled_flat):.2f} GeV")
 
 
 if __name__ == "__main__":
-    time = '20260929-201038'
+    time = '20261001-003138'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -699,10 +993,8 @@ if __name__ == "__main__":
 
     # Load Scalers
     scaler_features = joblib.load(f"scalers/scaler_features_{time}.joblib")
-    # scaler_target = joblib.load(f"scalers/scaler_target_{time}.joblib")
 
     features_test = scaler_features.transform(features_test)
-    # target_test = scaler_target.transform(target_test)
 
     features_test_tensor = torch.tensor(features_test, dtype=torch.float32).to(device)
     target_test_tensor = torch.tensor(target_test, dtype=torch.float32).to(device)
@@ -713,36 +1005,6 @@ if __name__ == "__main__":
         context_features=n_features,
         hyperparameters=hyperparameters)
 
-    # ----------------------------
-    # Visualize Sample
-
-    # visualize(
-    #     flow=flow,
-    #     features_test_tensor=features_test_tensor,
-    #     target_test_tensor=target_test_tensor,
-    #     scaler_target=scaler_target,
-    #     model_name=model_name)
-
-    # ----------------------------
-    # Mode Estimator
-
-    # pred_eta = mode_estimator(
-    #     flow=flow,
-    #     input_tensors=features[-1000:],
-    #     scaler_target=scaler_target,
-    #     model_name=model_name,
-    #     num_points=10000)
-    # print(pred_eta[-10:])
-    # print(target[-100:].flatten()[-10:])
-
-    # single_event = [features[-9]]
-    # plot_single_event_pdf(
-    #     flow, single_event, scaler_features, scaler_target, model_name
-    # )
-
-    # x = np.linspace(1,1000,1000)
-    # plt.plot(x,pred_eta - target[-1000:].flatten())
-    # plt.show()
 
     # ----------------------------
     # Coverage test
@@ -838,4 +1100,28 @@ if __name__ == "__main__":
         num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
         grid_range=(-5.0, 5.0),
         num_grid_points=1000,
+    )
+
+    # ----------------------------
+    # Latent Space Mapping Test
+
+    latent_results = latent_space_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        batch_size=512,
+        num_bins=60,
+    )
+
+    # ----------------------------
+    # Invariant Mass Reconstruction Test
+
+    invariant_mass_reconstruction(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        num_samples=50,
+        batch_size=512,
     )
