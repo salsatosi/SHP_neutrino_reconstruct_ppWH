@@ -106,6 +106,10 @@ def read_file(filename,FEATURES,TARGET):
     """
     df = pd.read_csv(filename,encoding_errors='ignore')
 
+
+    for col in FEATURES[-3:]:
+        df[col] = np.arctan2(np.sin(df[col]),np.cos(df[col]))
+
     features_data = df[FEATURES].values
     target_data = df[TARGET].values
 
