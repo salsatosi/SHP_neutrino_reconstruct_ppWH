@@ -329,7 +329,7 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261001-003138'
+    time = '20261001-224739'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -379,7 +379,7 @@ if __name__ == "__main__":
         model_name=model_name,
         nb1_nu_eta=nb1_nu_eta_test,
         nb2_nu_eta=nb2_nu_eta_test,
-        num_samples=50,
+        num_samples=500,
         batch_size=512,
         is_w_plus=True,
         bins=50
