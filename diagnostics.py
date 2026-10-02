@@ -795,7 +795,7 @@ def invariant_mass_reconstruction(
     m_wh_sampled_flat = m_wh_sample.flatten()
 
     # --- Compute Modes ---
-    mw_range = (40, 120)
+    mw_range = (0, 160)
     min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
     wh_range = (min_wh, max_wh)
 
@@ -1021,6 +1021,6 @@ if __name__ == "__main__":
         target_test=target_test,
         scaler_features=scaler_features,
         model_name=model_name,
-        num_samples=50,
+        num_samples=500,
         batch_size=512,
     )
