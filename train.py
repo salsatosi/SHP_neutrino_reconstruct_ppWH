@@ -27,36 +27,40 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 DEFAULT_HYPERPARAMETERS = {
-    "random_seed": 0,
+    "random_seed": 42,
     "data_split": {
         "train_val_size": 0.3,
-        "val_test_size": 0.5,
         "random_state": 42
     },
     "flow": {
-        "n_layers": 2,
+        "n_layers": 1,
         "hidden_features": 128,
-        "num_bins": 16,
+        "num_bins": 32,
         "tails": "linear",
         "tail_bound": 5.0,
-        "num_blocks": 3
+        "num_blocks": 2,
+        "dropout_probability": 0.15,
+        "activation": "silu",
+        "min_bin_width": 0.01,
+        "min_bin_height": 0.01,
+        "min_derivative": 0.01
     },
     "training": {
-        "learning_rate": 1e-4,
-        "epochs": 50,
+        "learning_rate": 3e-4,
+        "target_noise_std": 0.02,
+        "epochs": 200,
         "train_batch_size": 512,
-        "validation_batch_size": 512,
+        "validation_batch_size": 1024,
         "test_batch_size": 512,
         "train_shuffle": True,
-        "validation_shuffle": True,
+        "validation_shuffle": False,
         "test_shuffle": False,
-        "weight_decay": 1e-6,
-        "max_grad_norm": 10.0
+        "weight_decay": 1e-4,
+        "max_grad_norm": 5.0
     },
     "scheduler": {
-        "mode": "min",
-        "factor": 0.5,
-        "patience": 10
+        "type": "cosine",
+        "eta_min": 1e-6
     }
 }
 
@@ -76,22 +80,48 @@ def save_hyperparameters(hyperparameters, filename="hyperparameters"):
     return output_filename
 
 
-FEATURES = ["ChargedLep_E",
+FEATURES = ['ChargedLep_Charge',
+            "ChargedLep_E",
             "ChargedLep_Eta",
             "ChargedLep_pT",
             "HT",
             "Higgs_E",
             "Higgs_eta",
             "Higgs_pT",
+            'LeadBJet_E',
+            'LeadBJet_Eta',
+            'LeadBJet_pT',
             "MET",
             "MET_Sig",
+            'SubLeadBJet_E',
+            'SubLeadBJet_Eta',
+            'SubLeadBJet_pT',
             "NLightJets",
             "SumLightJets_E",
             "SumLightJets_Pt",
             "SumLightJets_eta",
             'Relative_Phi_Lep_Higgs',
             'Relative_Phi_Lep_MET',
-            'Relative_Phi_Lep_Jet']
+            'Relative_Phi_Lep_LeadBJet',
+            'Relative_Phi_Lep_SubleadBJet',
+            'Relative_Phi_Lep_SumLightJet']
+
+# FEATURES = ["ChargedLep_E",
+#             "ChargedLep_Eta",
+#             "ChargedLep_pT",
+#             "HT",
+#             "Higgs_E",
+#             "Higgs_eta",
+#             "Higgs_pT",
+#             "MET",
+#             "MET_Sig",
+#             "NLightJets",
+#             "SumLightJets_E",
+#             "SumLightJets_Pt",
+#             "SumLightJets_eta",
+#             'Relative_Phi_Lep_Higgs',
+#             'Relative_Phi_Lep_MET',
+#             'Relative_Phi_Lep_Jet']
 
 TARGET = ["True_nu_eta"]
 
@@ -107,7 +137,7 @@ def read_file(filename,FEATURES,TARGET):
     df = pd.read_csv(filename,encoding_errors='ignore')
 
 
-    for col in FEATURES[-3:]:
+    for col in FEATURES[-5:]:
         df[col] = np.arctan2(np.sin(df[col]),np.cos(df[col]))
 
     features_data = df[FEATURES].values
@@ -124,18 +154,11 @@ def split_data(features, target, hyperparameters):
     :param hyperparameters: hyperparameters
     :return:
     """
-    features_train, features_temp, target_train, target_temp = train_test_split(
+    features_train, features_val, target_train, target_val = train_test_split(
         features,
         target,
         test_size=hyperparameters["data_split"]["train_val_size"],
         random_state=hyperparameters["data_split"]["random_state"])
-
-    features_val, features_test, target_val, target_test = train_test_split(
-        features_temp,
-        target_temp,
-        test_size=hyperparameters["data_split"]["val_test_size"],
-        random_state=hyperparameters["data_split"]["random_state"]
-    )
 
     # Fit Scalers
     scaler_features = StandardScaler()
@@ -307,7 +330,7 @@ if __name__ == "__main__":
 
     n_features = len(FEATURES)
     n_target = len(TARGET)
-    features, target = read_file("data.csv",FEATURES,TARGET)
+    features, target = read_file("new_Input_WH_NeutrinoEtaFindingForTraining_4th_October2026.csv", FEATURES, TARGET)
     train_dataset, val_dataset = split_data(features, target, hyperparameters)
     flow = normalizing_flow(
         features=n_target,

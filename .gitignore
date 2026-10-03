@@ -16,5 +16,6 @@ __pycache__/
 .idea/
 .ipynb_checkpoints/
 models/
+models_legacy/
 quality/
 scalers/
