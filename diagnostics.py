@@ -820,7 +820,7 @@ def invariant_mass_reconstruction(
         histtype="step",
         linewidth=2,
         color="black",
-        label=rf"True $\eta_\nu$ (Mode: {mode_mw_true:.1f} GeV)",
+        label=rf"True $\eta_\nu$ (Mode: {mode_mw_true:.2f} GeV)",
     )
     axes[0].hist(
         m_w_sampled_flat,
@@ -829,13 +829,13 @@ def invariant_mass_reconstruction(
         density=True,
         alpha=0.5,
         color="royalblue",
-        label=rf"Flow Samples (Mode: {mode_mw_flow:.1f} GeV)",
+        label=rf"Flow Samples (Mode: {mode_mw_flow:.2f} GeV)",
     )
     axes[0].axvline(
-        80.379,
+        80.36,
         color="red",
         linestyle="--",
-        label=r"Nominal $m_W$ (80.4 GeV)",
+        label=r"Nominal $m_W$ (80.36 GeV)",
     )
     axes[0].set_xlabel(r"$m_W$ [GeV]", fontsize=11)
     axes[0].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
@@ -852,7 +852,7 @@ def invariant_mass_reconstruction(
         histtype="step",
         linewidth=2,
         color="black",
-        label=rf"True $\eta_\nu$ (Mode: {mode_mwh_true:.1f} GeV)",
+        label=rf"True $\eta_\nu$ (Mode: {mode_mwh_true:.2f} GeV)",
     )
     axes[1].hist(
         m_wh_sampled_flat,
@@ -861,7 +861,7 @@ def invariant_mass_reconstruction(
         density=True,
         alpha=0.5,
         color="darkorange",
-        label=rf"Flow Samples (Mode: {mode_mwh_flow:.1f} GeV)",
+        label=rf"Flow Samples (Mode: {mode_mwh_flow:.2f} GeV)",
     )
     axes[1].set_xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
     axes[1].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
@@ -884,25 +884,41 @@ def invariant_mass_reconstruction(
     print(f"Flow Reconstructed mWH Peak: {mode_mwh_flow:.2f} GeV")
 
 
-def mode_disambiguated_correlation(
+def correlation_test(
     flow,
     dataset,
     model_name,
+    nb1_eta,
+    nb2_eta,
+    met=None,
+    device=None,
     batch_size=512,
-    num_samples=10,  # Number of random samples per event
+    num_samples=10,
     num_grid=250,
     range_eta=(-4.5, 4.5),
+    bins=80,
+    seed=42,
 ):
+    """Evaluates and compares both Normalizing Flow reconstruction and Analytical
+
+    quadratic solutions (NB1/NB2) against ground-truth neutrino eta, plotting all
+    diagnostics in a single 2x3 figure.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # =========================================================================
+    # PART 1: Normalizing Flow Grid-Scan & Sampling
+    # =========================================================================
     flow.load_state_dict(torch.load(model_name, map_location=device))
     flow.eval()
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    # 1D evaluation grid across eta_nu
     grid = torch.linspace(
         range_eta[0], range_eta[1], num_grid, device=device
     )  # [G]
-    grid_expanded = grid.view(1, num_grid, 1)  # [1, G, 1]
+    grid_expanded = grid.view(1, num_grid, 1)
 
     all_targets = []
     all_mode1 = []
@@ -916,16 +932,12 @@ def mode_disambiguated_correlation(
             targets = targets.to(device)
             B = features.size(0)
 
-            # -------------------------------------------------
             # 1. Random Posterior Sampling
-            # -------------------------------------------------
             samples = flow.sample(num_samples=num_samples, context=features)
             samples = samples.squeeze(-1)  # [B, num_samples]
             all_samples.append(samples.cpu().numpy())
 
-            # -------------------------------------------------
             # 2. Grid Scan for Peak / Mode Detection
-            # -------------------------------------------------
             g_in = grid_expanded.expand(B, num_grid, 1).reshape(B * num_grid, 1)
             c_in = (
                 features.unsqueeze(1)
@@ -933,24 +945,21 @@ def mode_disambiguated_correlation(
                 .reshape(B * num_grid, -1)
             )
 
-            # Exact p(eta | x)
             log_prob = flow.log_prob(inputs=g_in, context=c_in).view(B, num_grid)
             probs = torch.exp(log_prob)
 
-            # Local maxima detection: probs[i] > probs[i-1] and probs[i] > probs[i+1]
+            # Local peak detection
             is_peak = (probs[:, 1:-1] > probs[:, :-2]) & (
                 probs[:, 1:-1] > probs[:, 2:]
             )
-            is_peak = F.pad(is_peak, (1, 1), value=False)  # [B, G]
+            is_peak = F.pad(is_peak, (1, 1), value=False)
 
             grid_cpu = grid.cpu().numpy()
             probs_cpu = probs.cpu().numpy()
             is_peak_cpu = is_peak.cpu().numpy()
 
-            # Extract top 2 modes per event
             for b in range(B):
                 peak_indices = np.where(is_peak_cpu[b])[0]
-
                 if len(peak_indices) >= 2:
                     sorted_peaks = peak_indices[
                         np.argsort(-probs_cpu[b, peak_indices])
@@ -978,199 +987,36 @@ def mode_disambiguated_correlation(
     mode2 = np.array(all_mode2)
     has_two_modes = np.array(all_has_two_modes)
 
-    # Random samples arrays
-    samples_arr = np.concatenate(all_samples, axis=0)  # [N, num_samples]
+    # Flatten random posterior samples
+    samples_arr = np.concatenate(all_samples, axis=0)
     targets_repeated = np.repeat(targets, num_samples)
     samples_flat = samples_arr.flatten()
 
-    # ----------------------------------------------------
-    # Disambiguation Logic
-    # ----------------------------------------------------
-    diff1 = np.abs(mode1 - targets)
-    diff2 = np.abs(mode2 - targets)
+    # Flow mode disambiguation
+    diff1_flow = np.abs(mode1 - targets)
+    diff2_flow = np.abs(mode2 - targets)
+    nearest_mode = np.where(diff1_flow <= diff2_flow, mode1, mode2)
+    accuracy_flow_all = np.mean(diff1_flow <= diff2_flow) * 100
+    accuracy_flow_bimodal = (
+        np.mean((diff1_flow <= diff2_flow)[has_two_modes]) * 100
+    )
 
-    # Nearest mode (oracle selection)
-    nearest_mode = np.where(diff1 <= diff2, mode1, mode2)
-
-    # Disambiguation Accuracy
-    correct_branch = diff1 <= diff2
-    accuracy_all = np.mean(correct_branch) * 100
-    accuracy_bimodal = np.mean(correct_branch[has_two_modes]) * 100
-
-    # ----------------------------------------------------
-    # Statistical Metrics & Linear Fits
-    # ----------------------------------------------------
-    # 1. Random Sampling
+    # Flow Metrics
     r_samples, _ = pearsonr(targets_repeated, samples_flat)
     slope_samp, intercept_samp = np.polyfit(targets_repeated, samples_flat, 1)
     rms_samples = np.sqrt(np.mean((samples_flat - targets_repeated) ** 2))
 
-    # 2. Primary Mode (MAP)
     r_primary, _ = pearsonr(targets, mode1)
     slope_prim, intercept_prim = np.polyfit(targets, mode1, 1)
     rms_primary = np.sqrt(np.mean((mode1 - targets) ** 2))
 
-    # 3. Nearest Mode (Disambiguated)
     r_nearest, _ = pearsonr(targets, nearest_mode)
     slope_near, intercept_near = np.polyfit(targets, nearest_mode, 1)
     rms_nearest = np.sqrt(np.mean((nearest_mode - targets) ** 2))
 
-    # ----------------------------------------------------
-    # Print Comprehensive Summary
-    # ----------------------------------------------------
-    print("\n" + "=" * 70)
-    print("MODE-DISAMBIGUATED CORRELATION TEST (COMPLETE COMPARISON)")
-    print("=" * 70)
-    print(
-        f"Events with explicit bimodal peaks : {np.sum(has_two_modes)} ({np.mean(has_two_modes)*100:.1f}%)"
-    )
-    print(f"Primary Mode Disambiguation Accuracy: {accuracy_all:.2f}% (All)")
-    print(f"                                   : {accuracy_bimodal:.2f}% (Bimodal)")
-    print("-" * 70)
-    print(f"1. Random Posterior Sampling:")
-    print(f"   Pearson Correlation (r)         : {r_samples:.4f}")
-    print(f"   RMS Error                       : {rms_samples:.4f}")
-    print(
-        f"   Linear Fit                      : y = {slope_samp:.3f}x {intercept_samp:+.3f}"
-    )
-    print("-" * 70)
-    print(f"2. Primary Mode (Global MAP):")
-    print(f"   Pearson Correlation (r)         : {r_primary:.4f}")
-    print(f"   RMS Error                       : {rms_primary:.4f}")
-    print(
-        f"   Linear Fit                      : y = {slope_prim:.3f}x {intercept_prim:+.3f}"
-    )
-    print("-" * 70)
-    print(f"3. Nearest Mode (Kinematic Resolution - Disambiguated):")
-    print(f"   Pearson Correlation (r)         : {r_nearest:.4f}")
-    print(f"   RMS Error                       : {rms_nearest:.4f}")
-    print(
-        f"   Linear Fit                      : y = {slope_near:.3f}x {intercept_near:+.3f}"
-    )
-    print("=" * 70)
-
-    # ----------------------------------------------------
-    # Diagnostic Plots (3-Panel Progression)
-    # ----------------------------------------------------
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5.2))
-    diag = np.linspace(range_eta[0], range_eta[1], 100)
-
-    # Panel 1: Random Sampling
-    h1 = axes[0].hist2d(
-        targets_repeated,
-        samples_flat,
-        bins=80,
-        range=[range_eta, range_eta],
-        cmap="Purples",
-        norm=LogNorm(),
-    )
-    fig.colorbar(h1[3], ax=axes[0], label="Counts (log scale)")
-    axes[0].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[0].plot(
-        diag,
-        slope_samp * diag + intercept_samp,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_samp:.2f}x {intercept_samp:+.2f}$",
-    )
-    axes[0].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[0].set_ylabel(r"Sampled $\hat{\eta}_\nu$", fontsize=11)
-    axes[0].set_title(
-        rf"(a) Random Sampling ($r = {r_samples:.3f}$)", fontsize=12
-    )
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(loc="upper left", fontsize=8.5)
-
-    # Panel 2: Primary Mode (MAP)
-    h2 = axes[1].hist2d(
-        targets,
-        mode1,
-        bins=80,
-        range=[range_eta, range_eta],
-        cmap="Blues",
-        norm=LogNorm(),
-    )
-    fig.colorbar(h2[3], ax=axes[1], label="Counts (log scale)")
-    axes[1].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[1].plot(
-        diag,
-        slope_prim * diag + intercept_prim,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_prim:.2f}x {intercept_prim:+.2f}$",
-    )
-    axes[1].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[1].set_ylabel(r"Primary Mode $\hat{\eta}_\nu$ (MAP)", fontsize=11)
-    axes[1].set_title(
-        rf"(b) Primary Mode MAP ($r = {r_primary:.3f}$)", fontsize=12
-    )
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc="upper left", fontsize=8.5)
-
-    # Panel 3: Nearest Mode (Disambiguated)
-    h3 = axes[2].hist2d(
-        targets,
-        nearest_mode,
-        bins=80,
-        range=[range_eta, range_eta],
-        cmap="Greens",
-        norm=LogNorm(),
-    )
-    fig.colorbar(h3[3], ax=axes[2], label="Counts (log scale)")
-    axes[2].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[2].plot(
-        diag,
-        slope_near * diag + intercept_near,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_near:.2f}x {intercept_near:+.2f}$",
-    )
-    axes[2].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[2].set_ylabel(r"Nearest Mode $\hat{\eta}_\nu$", fontsize=11)
-    axes[2].set_title(
-        rf"(c) Disambiguated Mode ($r = {r_nearest:.3f}$)", fontsize=12
-    )
-    axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="upper left", fontsize=8.5)
-
-    plt.suptitle(
-        r"Reconstruction Progression: Generative Spread $\to$ MAP $\to$ Disambiguated Resolution",
-        fontsize=13,
-        y=1.02,
-    )
-    plt.tight_layout()
-    plt.show()
-
-    return {
-        "r_samples": r_samples,
-        "rms_samples": rms_samples,
-        "r_primary": r_primary,
-        "rms_primary": rms_primary,
-        "r_nearest": r_nearest,
-        "rms_nearest": rms_nearest,
-        "accuracy_all": accuracy_all,
-        "accuracy_bimodal": accuracy_bimodal,
-    }
-
-
-def analytical_solutions_correlation(
-    true_eta,
-    nb1_eta,
-    nb2_eta,
-    met=None,  # Optional: MET array (if None, |sinh(eta)| is used)
-    seed=42,
-    bins=80,
-    range_eta=(-4.5, 4.5),
-):
-    """Performs correlation tests on the analytical quadratic solutions NB1 and
-
-    NB2: 1. Random 50/50 selection between NB1 and NB2. 2. Minimum |p_z|
-    heuristic (the paper's method from Sec. 2.3). 3. Closest solution to the
-    ground truth (ideal oracle).
-    """
-    # ----------------------------------------------------
-    # 1. Filter out complex / NaN solutions
-    # ----------------------------------------------------
+    # =========================================================================
+    # PART 2: Analytical Quadratic Solutions (NB1 & NB2)
+    # =========================================================================
     valid_mask = (
         ~np.isnan(nb1_eta)
         & ~np.isnan(nb2_eta)
@@ -1178,203 +1024,606 @@ def analytical_solutions_correlation(
         & ~np.isinf(nb2_eta)
     )
 
-    t = true_eta[valid_mask]
+    t_ana = targets[valid_mask]
     s1 = nb1_eta[valid_mask]
     s2 = nb2_eta[valid_mask]
-    m = met[valid_mask] if met is not None else None
+    m_met = met[valid_mask] if met is not None else None
 
-    n_total = len(true_eta)
-    n_valid = len(t)
+    n_total = len(targets)
+    n_valid = len(t_ana)
     n_complex = n_total - n_valid
 
-    # ----------------------------------------------------
-    # Method 1: Equal Chance (Random 50/50 Choice)
-    # ----------------------------------------------------
+    # 1. Random 50/50 Selection
     rng = np.random.default_rng(seed=seed)
     coin_flip = rng.choice([True, False], size=n_valid)
     random_pick = np.where(coin_flip, s1, s2)
+    r_rand, _ = pearsonr(t_ana, random_pick)
+    slope_rand, intercept_rand = np.polyfit(t_ana, random_pick, 1)
+    rms_rand = np.sqrt(np.mean((random_pick - t_ana) ** 2))
 
-    r_rand, _ = pearsonr(t, random_pick)
-    rho_rand, _ = spearmanr(t, random_pick)
-    slope_rand, intercept_rand = np.polyfit(t, random_pick, 1)
-    rms_rand = np.sqrt(np.mean((random_pick - t) ** 2))
-
-    # ----------------------------------------------------
-    # Method 2: Minimum |p_z| (The Paper's Heuristic, Sec 2.3)
-    # ----------------------------------------------------
-    if m is not None:
-        pz1 = m * np.abs(np.sinh(s1))
-        pz2 = m * np.abs(np.sinh(s2))
+    # 2. Min-|p_z| Selection Heuristic
+    if m_met is not None:
+        pz1 = m_met * np.abs(np.sinh(s1))
+        pz2 = m_met * np.abs(np.sinh(s2))
     else:
         pz1 = np.abs(np.sinh(s1))
         pz2 = np.abs(np.sinh(s2))
-
     minpz_pick = np.where(pz1 <= pz2, s1, s2)
+    r_minpz, _ = pearsonr(t_ana, minpz_pick)
+    slope_minpz, intercept_minpz = np.polyfit(t_ana, minpz_pick, 1)
+    rms_minpz = np.sqrt(np.mean((minpz_pick - t_ana) ** 2))
 
-    r_minpz, _ = pearsonr(t, minpz_pick)
-    rho_minpz, _ = spearmanr(t, minpz_pick)
-    slope_minpz, intercept_minpz = np.polyfit(t, minpz_pick, 1)
-    rms_minpz = np.sqrt(np.mean((minpz_pick - t) ** 2))
-
-    # ----------------------------------------------------
-    # Method 3: Closest Solution (Oracle Upper Bound)
-    # ----------------------------------------------------
-    diff1 = np.abs(s1 - t)
-    diff2 = np.abs(s2 - t)
-    closest_pick = np.where(diff1 <= diff2, s1, s2)
-
-    r_close, _ = pearsonr(t, closest_pick)
-    rho_close, _ = spearmanr(t, closest_pick)
-    slope_close, intercept_close = np.polyfit(t, closest_pick, 1)
-    rms_close = np.sqrt(np.mean((closest_pick - t) ** 2))
-
-    # Accuracy of min-|pz| vs. Oracle choice
+    # 3. Closest Analytical Selection
+    diff1_ana = np.abs(s1 - t_ana)
+    diff2_ana = np.abs(s2 - t_ana)
+    closest_pick = np.where(diff1_ana <= diff2_ana, s1, s2)
+    r_close, _ = pearsonr(t_ana, closest_pick)
+    slope_close, intercept_close = np.polyfit(t_ana, closest_pick, 1)
+    rms_close = np.sqrt(np.mean((closest_pick - t_ana) ** 2))
     minpz_accuracy = np.mean(minpz_pick == closest_pick) * 100
 
-    # ----------------------------------------------------
-    # Print Summary Table
-    # ----------------------------------------------------
-    print("\n" + "=" * 75)
-    print("ANALYTICAL SOLUTIONS (NB1 & NB2) CORRELATION TEST")
-    print("=" * 75)
+    # =========================================================================
+    # PART 3: Print Unified Summary Report
+    # =========================================================================
+    print("\n" + "=" * 78)
+    print("RECONSTRUCTION PERFORMANCE BENCHMARK (FLOW vs. ANALYTICAL)")
+    print("=" * 78)
     print(
-        f"Total events analyzed     : {n_total:,} (Valid Real: {n_valid:,} / {n_valid/n_total*100:.1f}%)"
+        f"Analytical Solvability : {n_valid:,}/{n_total:,} valid ({n_valid/n_total*100:.1f}%), {n_complex:,} complex ({n_complex/n_total*100:.1f}%)"
     )
     print(
-        f"Complex / NaN events      : {n_complex:,} ({n_complex/n_total*100:.1f}%)"
+        f"Flow Bimodality Rate   : {np.sum(has_two_modes):,}/{n_total:,} ({np.mean(has_two_modes)*100:.1f}%)"
     )
-    print("-" * 75)
-    print(f"1. Method 1: Equal Chance (Random 50/50 Coin Flip):")
-    print(f"   Pearson Correlation (r)  : {r_rand:.4f}")
-    print(f"   RMS Error                : {rms_rand:.4f}")
     print(
-        f"   Linear Fit               : y = {slope_rand:.3f}x {intercept_rand:+.3f}"
+        f"Disambiguation Acc.    : Flow = {accuracy_flow_all:.1f}% | Min-|pz| Heuristic = {minpz_accuracy:.1f}%"
     )
-    print("-" * 75)
-    print(f"2. Method 2: Minimum |p_z| (Paper Heuristic, Sec 2.3):")
-    print(f"   Branch Accuracy          : {minpz_accuracy:.2f}% (Matches Oracle)")
-    print(f"   Pearson Correlation (r)  : {r_minpz:.4f}")
-    print(f"   RMS Error                : {rms_minpz:.4f}")
+    print("-" * 78)
+    print("--- NORMALIZING FLOW ---")
     print(
-        f"   Linear Fit               : y = {slope_minpz:.3f}x {intercept_minpz:+.3f}"
+        f"  Random Posterior     : r = {r_samples:.4f} | RMS = {rms_samples:.4f} | y = {slope_samp:.2f}x {intercept_samp:+.2f}"
     )
-    print("-" * 75)
-    print(f"3. Method 3: Closest Solution (Theoretical Limit / Oracle):")
-    print(f"   Pearson Correlation (r)  : {r_close:.4f}")
-    print(f"   RMS Error                : {rms_close:.4f}")
     print(
-        f"   Linear Fit               : y = {slope_close:.3f}x {intercept_close:+.3f}"
+        f"  Primary Mode (MAP)   : r = {r_primary:.4f} | RMS = {rms_primary:.4f} | y = {slope_prim:.2f}x {intercept_prim:+.2f}"
     )
-    print("=" * 75)
+    print(
+        f"  Disambiguated Mode   : r = {r_nearest:.4f} | RMS = {rms_nearest:.4f} | y = {slope_near:.2f}x {intercept_near:+.2f}"
+    )
+    print("--- ANALYTICAL RECONSTRUCTION (NB1 / NB2) ---")
+    print(
+        f"  Random 50/50 Choice  : r = {r_rand:.4f} | RMS = {rms_rand:.4f} | y = {slope_rand:.2f}x {intercept_rand:+.2f}"
+    )
+    print(
+        f"  Min-|pz| Heuristic   : r = {r_minpz:.4f} | RMS = {rms_minpz:.4f} | y = {slope_minpz:.2f}x {intercept_minpz:+.2f}"
+    )
+    print(
+        f"  Closest Analytical Selection: r = {r_close:.4f} | RMS = {rms_close:.4f} | y = {slope_close:.2f}x {intercept_close:+.2f}"
+    )
+    print("=" * 78)
 
-    # ----------------------------------------------------
-    # Diagnostic Plots (3-Panel Figure)
-    # ----------------------------------------------------
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5.2))
+    # =========================================================================
+    # PART 4: Unified 2x3 Plotting
+    # =========================================================================
+    fig, axes = plt.subplots(2, 3, figsize=(19, 10.5))
     diag = np.linspace(range_eta[0], range_eta[1], 100)
 
-    # Panel 1: Random 50/50 Selection
-    h1 = axes[0].hist2d(
-        t,
+    # Helper function for uniform panel styling
+    def plot_panel(ax, x, y, slope, intercept, r_val, cmap, title, ylabel):
+        h = ax.hist2d(
+            x,
+            y,
+            bins=bins,
+            range=[range_eta, range_eta],
+            cmap=cmap,
+            norm=LogNorm(),
+        )
+        fig.colorbar(h[3], ax=ax, label="Counts (log scale)")
+        ax.plot(diag, diag, "r--", lw=2, label="Ideal ($y = x$)")
+        ax.plot(
+            diag,
+            slope * diag + intercept,
+            "k-",
+            lw=1.5,
+            label=f"Fit: $y = {slope:.2f}x {intercept:+.2f}$",
+        )
+        ax.set_xlabel(r"True $\eta_\nu$", fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.set_title(rf"{title} ($r = {r_val:.3f}$)", fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8.5)
+
+    # Row 1: Flow Progression
+    plot_panel(
+        axes[0, 0],
+        targets_repeated,
+        samples_flat,
+        slope_samp,
+        intercept_samp,
+        r_samples,
+        "Purples",
+        "(a) Flow: Random Sampling",
+        r"Sampled $\hat{\eta}_\nu$",
+    )
+    plot_panel(
+        axes[0, 1],
+        targets,
+        mode1,
+        slope_prim,
+        intercept_prim,
+        r_primary,
+        "Blues",
+        "(b) Flow: Primary Mode (MAP)",
+        r"Primary Mode $\hat{\eta}_\nu$ (MAP)",
+    )
+    plot_panel(
+        axes[0, 2],
+        targets,
+        nearest_mode,
+        slope_near,
+        intercept_near,
+        r_nearest,
+        "Greens",
+        "(c) Flow: Disambiguated Mode",
+        r"Nearest Mode $\hat{\eta}_\nu$",
+    )
+
+    # Row 2: Analytical Progression
+    plot_panel(
+        axes[1, 0],
+        t_ana,
         random_pick,
-        bins=bins,
-        range=[range_eta, range_eta],
-        cmap="Blues",
-        norm=LogNorm(),
+        slope_rand,
+        intercept_rand,
+        r_rand,
+        "Blues",
+        "(d) Analytical: Random 50/50",
+        r"Random Analytical $\hat{\eta}_\nu$",
     )
-    fig.colorbar(h1[3], ax=axes[0], label="Counts (log scale)")
-    axes[0].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[0].plot(
-        diag,
-        slope_rand * diag + intercept_rand,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_rand:.2f}x {intercept_rand:+.2f}$",
-    )
-    axes[0].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[0].set_ylabel(r"Random Analytical $\hat{\eta}_\nu$", fontsize=11)
-    axes[0].set_title(
-        rf"(a) Equal Chance 50/50 ($r = {r_rand:.3f}$)", fontsize=12
-    )
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(loc="upper left", fontsize=8.5)
-
-    # Panel 2: Minimum |p_z| (Paper Heuristic)
-    h2 = axes[1].hist2d(
-        t,
+    plot_panel(
+        axes[1, 1],
+        t_ana,
         minpz_pick,
-        bins=bins,
-        range=[range_eta, range_eta],
-        cmap="Oranges",
-        norm=LogNorm(),
+        slope_minpz,
+        intercept_minpz,
+        r_minpz,
+        "Oranges",
+        r"(e) Analytical: Min-$|p_z|$",
+        r"Min-$|p_z|$ $\hat{\eta}_\nu$",
     )
-    fig.colorbar(h2[3], ax=axes[1], label="Counts (log scale)")
-    axes[1].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[1].plot(
-        diag,
-        slope_minpz * diag + intercept_minpz,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_minpz:.2f}x {intercept_minpz:+.2f}$",
-    )
-    axes[1].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[1].set_ylabel(r"Min-$|p_z|$ Analytical $\hat{\eta}_\nu$", fontsize=11)
-    axes[1].set_title(
-        rf"(b) Min-$|p_z|$ Heuristic ($r = {r_minpz:.3f}$)", fontsize=12
-    )
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc="upper left", fontsize=8.5)
-
-    # Panel 3: Closest Solution (Oracle)
-    h3 = axes[2].hist2d(
-        t,
+    plot_panel(
+        axes[1, 2],
+        t_ana,
         closest_pick,
-        bins=bins,
-        range=[range_eta, range_eta],
-        cmap="Greens",
-        norm=LogNorm(),
+        slope_close,
+        intercept_close,
+        r_close,
+        "Greens",
+        "(f) Closest Analytical Selection",
+        r"Closest Analytical $\hat{\eta}_\nu$",
     )
-    fig.colorbar(h3[3], ax=axes[2], label="Counts (log scale)")
-    axes[2].plot(diag, diag, "r--", lw=2, label="Ideal Identity ($y = x$)")
-    axes[2].plot(
-        diag,
-        slope_close * diag + intercept_close,
-        "k-",
-        lw=1.5,
-        label=f"Fit: $y = {slope_close:.2f}x {intercept_close:+.2f}$",
-    )
-    axes[2].set_xlabel(r"True $\eta_\nu$", fontsize=11)
-    axes[2].set_ylabel(r"Closest Analytical $\hat{\eta}_\nu$", fontsize=11)
-    axes[2].set_title(
-        rf"(c) Closest Solution / Oracle ($r = {r_close:.3f}$)", fontsize=12
-    )
-    axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="upper left", fontsize=8.5)
 
     plt.suptitle(
-        r"Analytical Solutions (NB1 & NB2): Random $\to$ Min-$|p_z|$ $\to$ Oracle",
-        fontsize=13,
-        y=1.02,
+        r"Comparison of Neutrino $\eta_\nu$ Reconstruction: Normalizing Flow vs. Analytical Quadratic Solution",
+        fontsize=14,
+        y=0.995,
     )
     plt.tight_layout()
     plt.show()
 
     return {
-        "r_random": r_rand,
-        "rms_random": rms_rand,
-        "r_minpz": r_minpz,
-        "rms_minpz": rms_minpz,
-        "r_closest": r_close,
-        "rms_closest": rms_close,
-        "minpz_accuracy": minpz_accuracy,
+        # Flow metrics
+        "flow_r_samples": r_samples,
+        "flow_rms_samples": rms_samples,
+        "flow_r_primary": r_primary,
+        "flow_rms_primary": rms_primary,
+        "flow_r_nearest": r_nearest,
+        "flow_rms_nearest": rms_nearest,
+        "flow_accuracy_all": accuracy_flow_all,
+        "flow_accuracy_bimodal": accuracy_flow_bimodal,
+        # Analytical metrics
+        "ana_r_random": r_rand,
+        "ana_rms_random": rms_rand,
+        "ana_r_minpz": r_minpz,
+        "ana_rms_minpz": rms_minpz,
+        "ana_r_closest": r_close,
+        "ana_rms_closest": rms_close,
+        "ana_minpz_accuracy": minpz_accuracy,
         "n_valid": n_valid,
         "n_complex": n_complex,
     }
 
 
+def lorentz_boost(p4, beta):
+    """Boost a 4-momentum p4 = (px, py, pz, E) by velocity vector beta = (bx,
+
+    by, bz).
+
+    p4 shape: (N, 4) or (N, S, 4) beta shape: (N, 3) or (N, S, 3)
+    """
+    beta_sq = np.sum(beta**2, axis=-1, keepdims=True)  # beta^2
+    gamma = 1.0 / np.sqrt(np.maximum(1e-10, 1.0 - beta_sq))
+
+    p3 = p4[..., :3]
+    E = p4[..., 3:4]
+
+    # Lorentz boost formula along arbitrary 3-vector beta
+    beta_dot_p = np.sum(beta * p3, axis=-1, keepdims=True)
+
+    factor = np.where(
+        beta_sq > 1e-10, (gamma - 1.0) / np.maximum(beta_sq, 1e-10), 0.0
+    )
+    p3_boosted = p3 + factor * beta_dot_p * beta - gamma * E * beta
+    E_boosted = gamma * (E - beta_dot_p)
+
+    return np.concatenate([p3_boosted, E_boosted], axis=-1)
+
+
+def unit_vector(v):
+    norm = np.linalg.norm(v, axis=-1, keepdims=True)
+    return v / np.maximum(1e-9, norm)
+
+
+def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
+
+    # 1. Build intermediate composite systems
+    p4_w = p4_lep + p4_nu  # p4Z1 in C++
+    p4_h = p4_b1 + p4_b2  # p4Z2 in C++
+    p4_wh = p4_w + p4_h  # p4H / p4X in C++
+
+    # ----------------------------------------------------
+    # costhetastar (Angle of W in WH CoM frame)
+    # ----------------------------------------------------
+    boost_x = -p4_wh[:, :3] / p4_wh[:, 3:4]
+    p4_w_X = lorentz_boost(p4_w, boost_x)
+    p3_w_X = p4_w_X[:, :3]
+
+    costhetastar = p3_w_X[:, 2] / np.maximum(
+        1e-9, np.linalg.norm(p3_w_X, axis=-1)
+    )
+    costhetastar = np.clip(costhetastar, -1.0, 1.0)
+
+    # ----------------------------------------------------
+    # costheta1 (Lepton in W rest frame vs Higgs direction)
+    # ----------------------------------------------------
+    boost_w = -p4_w[:, :3] / p4_w[:, 3:4]
+    p4_lep_BW = lorentz_boost(p4_lep, boost_w)
+    p4_h_BW = lorentz_boost(p4_h, boost_w)
+
+    u_lep_BW = unit_vector(p4_lep_BW[:, :3])
+    u_h_BW = unit_vector(p4_h_BW[:, :3])
+    costheta1 = -np.sum(u_h_BW * u_lep_BW, axis=-1)
+    costheta1 = np.clip(costheta1, -1.0, 1.0)
+
+    # ----------------------------------------------------
+    # costheta2 (Leading b-jet in Higgs rest frame vs W direction)
+    # ----------------------------------------------------
+    boost_h = -p4_h[:, :3] / p4_h[:, 3:4]
+    p4_b1_BH = lorentz_boost(p4_b1, boost_h)
+    p4_w_BH = lorentz_boost(p4_w, boost_h)
+
+    u_b1_BH = unit_vector(p4_b1_BH[:, :3])
+    u_w_BH = unit_vector(p4_w_BH[:, :3])
+    costheta2 = -np.sum(u_w_BH * u_b1_BH, axis=-1)
+    costheta2 = np.clip(costheta2, -1.0, 1.0)
+
+    # ----------------------------------------------------
+    # Phi and Phi1 (In WH CoM frame)
+    # ----------------------------------------------------
+    p4_lep_X = lorentz_boost(p4_lep, boost_x)
+    p4_nu_X = lorentz_boost(p4_nu, boost_x)
+    p4_b1_X = lorentz_boost(p4_b1, boost_x)
+    p4_b2_X = lorentz_boost(p4_b2, boost_x)
+
+    p3_w_unit_X = unit_vector(p3_w_X)
+
+    # Normal vectors to the decay planes
+    normal1_X = unit_vector(
+        np.cross(p4_lep_X[:, :3], p4_nu_X[:, :3])
+    )  # W decay plane
+    normal2_X = unit_vector(
+        np.cross(p4_b1_X[:, :3], p4_b2_X[:, :3])
+    )  # H decay plane
+
+    # Normal vector to the scattering / production plane (beamAxis = 0, 0, 1)
+    beam_axis = np.zeros_like(p3_w_unit_X)
+    beam_axis[:, 2] = 1.0
+    normalSC_X = unit_vector(np.cross(beam_axis, p3_w_unit_X))
+
+    # --- Phi (Angle between W decay plane and H decay plane) ---
+    tmp_sgn_phi = np.sum(p3_w_unit_X * np.cross(normal1_X, normal2_X), axis=-1)
+    sgn_phi = np.sign(tmp_sgn_phi)
+    dot_12 = np.clip(np.sum(normal1_X * normal2_X, axis=-1), -1.0, 1.0)
+    Phi = sgn_phi * np.arccos(-dot_12)
+
+    # --- Phi1 (Angle between W decay plane and scattering plane) ---
+    tmp_sgn_phi1 = np.sum(
+        p3_w_unit_X * np.cross(normal1_X, normalSC_X), axis=-1
+    )
+    sgn_phi1 = np.sign(tmp_sgn_phi1)
+    dot_1sc = np.clip(np.sum(normal1_X * normalSC_X, axis=-1), -1.0, 1.0)
+    Phi1 = sgn_phi1 * np.arccos(dot_1sc)
+
+    # ----------------------------------------------------
+    # dphi_ll (Azimuthal angle between lepton and neutrino in WH frame)
+    # ----------------------------------------------------
+    phi_lep_X = np.arctan2(p4_lep_X[:, 1], p4_lep_X[:, 0])
+    phi_nu_X = np.arctan2(p4_nu_X[:, 1], p4_nu_X[:, 0])
+    dphi_ll = np.abs(
+        np.arctan2(np.sin(phi_lep_X - phi_nu_X), np.cos(phi_lep_X - phi_nu_X))
+    )
+
+    return {
+        "costhetastar": costhetastar,
+        "costheta1": costheta1,
+        "costheta2": costheta2,
+        "Phi": Phi,
+        "Phi1": Phi1,
+        "dphi_ll": dphi_ll,
+    }
+
+
+def angle_comparison(
+    flow,
+    features_test_scaled,
+    target_test,
+    scaler_features,
+    model_name,
+    nb1_nu_eta=None,
+    nb2_nu_eta=None,
+    batch_size=512,
+    num_grid=500,  # Grid resolution for exact Mode (MAP) search
+    range_eta=(-4.5, 4.5),
+    bins=40,
+):
+    flow.load_state_dict(torch.load(model_name, map_location=device))
+    flow.eval()
+
+    # 1. Unscale features to physical units (GeV, radians)
+    feat_unscaled = scaler_features.inverse_transform(features_test_scaled)
+
+    # Extract Lepton kinematics
+    lep_pt = feat_unscaled[:, FEATURES.index("ChargedLep_pT")]
+    lep_eta = feat_unscaled[:, FEATURES.index("ChargedLep_Eta")]
+    lep_e = feat_unscaled[:, FEATURES.index("ChargedLep_E")]
+    p4_lep = np.stack(
+        [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
+        axis=-1,
+    )
+
+    # Extract MET kinematics
+    met = feat_unscaled[:, FEATURES.index("MET")]
+    phi_nu = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
+
+    # Extract b-Jets kinematics
+    b1_pt = feat_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    b1_eta = feat_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    b1_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    b1_e = feat_unscaled[:, FEATURES.index("LeadBJet_E")]
+    p4_b1 = np.stack(
+        [
+            b1_pt * np.cos(b1_phi),
+            b1_pt * np.sin(b1_phi),
+            b1_pt * np.sinh(b1_eta),
+            b1_e,
+        ],
+        axis=-1,
+    )
+
+    b2_pt = feat_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    b2_eta = feat_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    b2_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+    b2_e = feat_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    p4_b2 = np.stack(
+        [
+            b2_pt * np.cos(b2_phi),
+            b2_pt * np.sin(b2_phi),
+            b2_pt * np.sinh(b2_eta),
+            b2_e,
+        ],
+        axis=-1,
+    )
+
+    true_eta = target_test.flatten()
+
+    def build_p4_nu(eta):
+        px = met * np.cos(phi_nu)
+        py = met * np.sin(phi_nu)
+        pz = met * np.sinh(eta)
+        e = met * np.cosh(eta)
+        return np.stack([px, py, pz, e], axis=-1)
+
+    # ----------------------------------------------------
+    # 2. Reconstruct Neutrino 4-Vectors
+    # ----------------------------------------------------
+    # (a) True MC
+    p4_nu_true = build_p4_nu(true_eta)
+    obs_true = compute_angles_vectorized(p4_lep, p4_nu_true, p4_b1, p4_b2)
+
+    # (b) Flow Mode (MAP) Estimator: Grid search for highest peak
+    features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    grid = torch.linspace(
+        range_eta[0], range_eta[1], num_grid, device=device
+    )  # [G]
+    all_flow_modes = []
+
+    with torch.no_grad():
+        for (bx,) in loader:
+            bx = bx.to(device)
+            B = bx.size(0)
+
+            # Replicate grid and context: [B * G, 1] and [B * G, n_features]
+            g_in = (
+                grid.view(1, num_grid, 1)
+                .expand(B, num_grid, 1)
+                .reshape(B * num_grid, 1)
+            )
+            c_in = (
+                bx.unsqueeze(1).expand(B, num_grid, -1).reshape(B * num_grid, -1)
+            )
+
+            # Exact log-prob evaluation
+            log_prob = flow.log_prob(inputs=g_in, context=c_in).view(
+                B, num_grid
+            )
+
+            # Find Mode: argmax for each event
+            best_idx = torch.argmax(log_prob, dim=1)
+            eta_mode_batch = grid[best_idx].cpu().numpy()
+            all_flow_modes.append(eta_mode_batch)
+
+    eta_flow_mode = np.concatenate(all_flow_modes)
+    p4_nu_flow = build_p4_nu(eta_flow_mode)
+    obs_flow = compute_angles_vectorized(p4_lep, p4_nu_flow, p4_b1, p4_b2)
+
+    # (c) Paper Baseline: min-|pz|
+    obs_base = None
+    if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        pz1 = np.abs(met * np.sinh(nb1_nu_eta))
+        pz2 = np.abs(met * np.sinh(nb2_nu_eta))
+        eta_minpz = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+        p4_nu_base = build_p4_nu(eta_minpz)
+        obs_base = compute_angles_vectorized(p4_lep, p4_nu_base, p4_b1, p4_b2)
+
+    # ----------------------------------------------------
+    # Helper: Chi-Squared Engine
+    # ----------------------------------------------------
+    def compute_chi2_ndf(counts_test, counts_ref):
+        n_ref = np.sum(counts_ref)
+        n_test = np.sum(counts_test)
+        scale = n_ref / n_test
+
+        scaled_test = counts_test * scale
+        variance = counts_ref + (scale**2) * counts_test
+
+        valid = (counts_ref > 5) & (variance > 0)
+        chi2 = np.sum(
+            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
+        )
+        ndf = np.sum(valid) - 1
+        chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
+        return chi2, ndf, chi2_ndf
+
+    # ----------------------------------------------------
+    # 3. Calculate Chi2 and Prepare Plotting
+    # ----------------------------------------------------
+    plot_vars = [
+        ("costhetastar", r"$\cos\theta^*$", (-1.0, 1.0)),
+        ("costheta1", r"$\cos\theta_1$", (-1.0, 1.0)),
+        ("Phi1", r"$|\Phi_1|$", (0.0, np.pi)),
+        ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$", (0.0, np.pi)),
+    ]
+
+    chi2_results = {}
+
+    print("\n" + "=" * 95)
+    print(
+        f"{'Observable':<28} | {'Flow (Mode) chi2/ndf':<28} | {'Baseline min-|pz| chi2/ndf':<28}"
+    )
+    print("=" * 95)
+
+    fig, axes = plt.subplots(
+        4, 1, figsize=(8.5, 14.5), gridspec_kw={"hspace": 0.35}
+    )
+
+    for i, (key, label, rng) in enumerate(plot_vars):
+        # Raw counts for chi2 calculation
+        raw_true, edges = np.histogram(
+            obs_true[key], bins=bins, range=rng
+        )
+        raw_flow, _ = np.histogram(obs_flow[key], bins=bins, range=rng)
+
+        # Flow chi2
+        chi2_f, ndf_f, r_chi2_f = compute_chi2_ndf(raw_flow, raw_true)
+
+        # Baseline chi2
+        chi2_b, ndf_b, r_chi2_b = np.nan, np.nan, np.nan
+        if obs_base is not None:
+            raw_base, _ = np.histogram(obs_base[key], bins=bins, range=rng)
+            chi2_b, ndf_b, r_chi2_b = compute_chi2_ndf(raw_base, raw_true)
+
+        chi2_results[key] = {
+            "flow": (chi2_f, ndf_f, r_chi2_f),
+            "baseline": (chi2_b, ndf_b, r_chi2_b),
+        }
+
+        print(
+            f"{key:<28} | {r_chi2_f:<8.2f} (chi2: {chi2_f:<7.1f}, ndf: {ndf_f:<2}) | {r_chi2_b:<8.2f} (chi2: {chi2_b:<7.1f}, ndf: {ndf_b:<2})"
+        )
+
+        # Normalized densities for plotting
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        norm_true, _ = np.histogram(
+            obs_true[key], bins=bins, range=rng, density=True
+        )
+        norm_flow, _ = np.histogram(
+            obs_flow[key], bins=bins, range=rng, density=True
+        )
+
+        ax = axes[i]
+        ax.hist(
+            centers,
+            bins=edges,
+            weights=norm_true,
+            histtype="step",
+            lw=2.0,
+            color="black",
+            label="MC Truth",
+        )
+        ax.hist(
+            centers,
+            bins=edges,
+            weights=norm_flow,
+            histtype="stepfilled",
+            alpha=0.45,
+            color="royalblue",
+            label=rf"Flow Mode ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.1f}$)",
+        )
+
+        if obs_base is not None:
+            norm_base, _ = np.histogram(
+                obs_base[key], bins=bins, range=rng, density=True
+            )
+            ax.hist(
+                centers,
+                bins=edges,
+                weights=norm_base,
+                histtype="step",
+                ls="--",
+                lw=1.8,
+                color="crimson",
+                label=rf"Baseline $\min|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_b:.1f}$)",
+            )
+
+        ax.set_xlabel(label, fontsize=11)
+        ax.set_ylabel("Normalized Density", fontsize=10)
+        ax.set_xlim(rng)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9, loc="upper right")
+
+    print("=" * 95)
+
+    plt.suptitle(
+        "Polarization Observables & Chi-Squared Test vs. MC Truth",
+        fontsize=13,
+        y=0.99,
+    )
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "obs_true": obs_true,
+        "obs_flow": obs_flow,
+        "obs_base": obs_base,
+        "chi2_results": chi2_results,
+    }
+
+
 if __name__ == "__main__":
-    time = '20261001-224739'
-    data_filename = 'new_Input_WH_NeutrinoEtaFinding_27th_September2026.csv'
+    time = '20261004-193333'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -1382,16 +1631,16 @@ if __name__ == "__main__":
     model_name = f"models/model_{time}.pt"
     n_features = len(FEATURES)
     n_target = len(TARGET)
-    features, target = read_file(data_filename, FEATURES, TARGET)
-    # features_test, target_test = read_file(data_filename, FEATURES, TARGET)
+    # features, target = read_file(data_filename, FEATURES, TARGET)
+    features_test, target_test = read_file(data_filename, FEATURES, TARGET)
 
-    features_train, features_temp, target_train, target_temp = train_test_split(
-        features, target, test_size=hyperparameters["data_split"]["train_val_size"],
-        random_state=hyperparameters["data_split"]["random_state"])
-
-    features_val, features_test, target_val, target_test = train_test_split(
-        features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
-        random_state=hyperparameters["data_split"]["random_state"])
+    # features_train, features_temp, target_train, target_temp = train_test_split(
+    #     features, target, test_size=hyperparameters["data_split"]["train_val_size"],
+    #     random_state=hyperparameters["data_split"]["random_state"])
+    #
+    # features_val, features_test, target_val, target_test = train_test_split(
+    #     features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
+    #     random_state=hyperparameters["data_split"]["random_state"])
 
     # Load Scalers
     scaler_features = joblib.load(f"scalers/scaler_features_{time}.joblib")
@@ -1408,147 +1657,158 @@ if __name__ == "__main__":
         hyperparameters=hyperparameters)
 
 
-    # ----------------------------
-    # Coverage test
-
-    coverage = interval_coverage(
-        flow=flow,
-        dataset=test_dataset,
-        levels=(0.50,0.68,0.90,0.95),
-        model_name=model_name
-    )
-
-    # ----------------------------
-    # Shuffle test
-
-    normal_nll, shuffled_nll = shuffled_context_nll(
-        flow=flow,
-        dataset=test_dataset,
-        batch_size=512,
-        model_name=model_name
-    )
-
-    # ----------------------------
-    # Conditional Calibration
-
-    # index = 'ChargedLep_E'
-    # binned_coverage(
+    # # ----------------------------
+    # # Coverage test
+    #
+    # coverage = interval_coverage(
     #     flow=flow,
     #     dataset=test_dataset,
-    #     feature_index=FEATURES.index(index),
-    #     model_name=model_name,
+    #     levels=(0.50,0.68,0.90,0.95),
+    #     model_name=model_name
     # )
-
-    # ----------------------------
-    # PIT Value test
-
-    pit_values = pit_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        batch_size=512,
-        num_bins=20
-    )
-
-    # ----------------------------
-    # Point Reconstruction test
-
-    results = point_reconstruction_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        num_samples=2000,
-        estimator="mode"
-    )
-
-    residuals = results["residual"]
-
-    plt.figure(figsize=(8, 5))
-
-    plt.hist(
-        residuals,
-        bins=100,
-        density=True
-    )
-
-    plt.axvline(
-        0,
-        linestyle="--",
-        label="Zero residual"
-    )
-
-    plt.xlabel(
-        r"$\Delta \hat{\eta}_\nu^{mode}$"
-    )
-    plt.ylabel("Probability Density")
-    plt.title(r"$\eta_\nu$ Reconstruction Residual")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-    # ----------------------------
-    # Multimodality / Posterior Shape Visualization
-
-    df = pd.read_csv(data_filename,encoding_errors='ignore')
-    nb1_nu_eta = df['NB1_nu_eta'].values
-    nb2_nu_eta = df['NB2_nu_eta'].values
-
-    plot_event_posteriors(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nb1_nu_eta=nb1_nu_eta,
-        nb2_nu_eta=nb2_nu_eta,
-        num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
-        grid_range=(-5.0, 5.0),
-        num_grid_points=1000,
-    )
-
-
-    # ----------------------------
-    # Invariant Mass Reconstruction Test
-
-    invariant_mass_reconstruction(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        num_samples=500,
-        batch_size=512,
-        num_bins=120
-    )
-
-    # # ----------------------------
-    # # Correlation Test
     #
-    # disambig_results = mode_disambiguated_correlation(
+    # # ----------------------------
+    # # Shuffle test
+    #
+    # normal_nll, shuffled_nll = shuffled_context_nll(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     batch_size=512,
+    #     model_name=model_name
+    # )
+    #
+    # # ----------------------------
+    # # Conditional Calibration
+    #
+    # # index = 'ChargedLep_E'
+    # # binned_coverage(
+    # #     flow=flow,
+    # #     dataset=test_dataset,
+    # #     feature_index=FEATURES.index(index),
+    # #     model_name=model_name,
+    # # )
+    #
+    # # ----------------------------
+    # # PIT Value test
+    #
+    # pit_values = pit_test(
     #     flow=flow,
     #     dataset=test_dataset,
     #     model_name=model_name,
     #     batch_size=512,
-    #     num_grid=250,
-    #     range_eta=(-4.5, 4.5),
+    #     num_bins=20
     # )
     #
     # # ----------------------------
-    # # Analytical Solutions Correlation Test
+    # # Point Reconstruction test
     #
-    # df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+    # results = point_reconstruction_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     num_samples=2000,
+    #     estimator="mode"
+    # )
     #
-    # # Match test set indices
-    # df_test_raw = df_raw.iloc[-len(target_test):]
-    # true_eta_test = df_test_raw["True_nu_eta"].values
-    # nb1_test = df_test_raw["NB1_nu_eta"].values
-    # nb2_test = df_test_raw["NB2_nu_eta"].values
-    # met_test = df_test_raw["MET"].values
+    # residuals = results["residual"]
     #
-    # analytical_results = analytical_solutions_correlation(
-    #     true_eta=true_eta_test,
-    #     nb1_eta=nb1_test,
-    #     nb2_eta=nb2_test,
-    #     met=met_test,
-    #     seed=42,
-    #     bins=80,
+    # plt.figure(figsize=(8, 5))
+    #
+    # plt.hist(
+    #     residuals,
+    #     bins=100,
+    #     density=True
+    # )
+    #
+    # plt.axvline(
+    #     0,
+    #     linestyle="--",
+    #     label="Zero residual"
+    # )
+    #
+    # plt.xlabel(
+    #     r"$\Delta \hat{\eta}_\nu^{mode}$"
+    # )
+    # plt.ylabel("Probability Density")
+    # plt.title(r"$\eta_\nu$ Reconstruction Residual")
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.show()
+    #
+    # # ----------------------------
+    # # Multimodality / Posterior Shape Visualization
+    #
+    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # plot_event_posteriors(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
+    #     grid_range=(-5.0, 5.0),
+    #     num_grid_points=1000,
+    # )
+    #
+    #
+    # # ----------------------------
+    # # Invariant Mass Reconstruction Test
+    #
+    # invariant_mass_reconstruction(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     num_samples=500,
+    #     batch_size=512,
+    #     num_bins=120
+    # )
+
+    # ----------------------------
+    # Correlation Test
+
+    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+
+    # Match test set indices
+    df_test_raw = df_raw.iloc[-len(target_test):]
+    true_eta_test = df_test_raw["True_nu_eta"].values
+    nb1_test = df_test_raw["NB1_nu_eta"].values
+    nb2_test = df_test_raw["NB2_nu_eta"].values
+    met_test = df_test_raw["MET"].values
+
+    results = correlation_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        nb1_eta=nb1_test,
+        nb2_eta=nb2_test,
+        met=met_test,
+        seed=42,
+        bins=80,
+        range_eta=(-4.5, 4.5),
+    )
+
+    # # ----------------------------
+    # # Angle Comparison
+    #
+    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # angles_result = angle_comparison(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     batch_size=512,
+    #     num_grid=500,
     #     range_eta=(-4.5, 4.5),
+    #     bins=40,
     # )

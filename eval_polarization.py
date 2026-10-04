@@ -406,8 +406,8 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261003-225704'
-    data_filename = 'new_Input_WLH_NeutrinoEtaFindingEvaluation_3rd_October2026.csv'
+    time = '20261004-193333'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -456,7 +456,8 @@ if __name__ == "__main__":
         model_name=model_name,
         nb1_nu_eta=nb1_nu_eta_test,
         nb2_nu_eta=nb2_nu_eta_test,
-        num_samples=500,
+        num_samples=50,
         batch_size=512,
         bins=50
     )
+
