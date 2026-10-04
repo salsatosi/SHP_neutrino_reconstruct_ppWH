@@ -19,3 +19,4 @@ models/
 models_legacy/
 quality/
 scalers/
+data/

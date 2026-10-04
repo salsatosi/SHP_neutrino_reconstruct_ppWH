@@ -45,8 +45,8 @@ def reconstruct_flow_polarization(
     nb2_nu_eta=None,  # 2nd quadratic solution
     num_samples=50,
     batch_size=512,
-    is_w_plus=True,
     bins=50,
+    seed=42,  # Seed for reproducible 50/50 random selection
 ):
     flow.load_state_dict(torch.load(model_name, map_location=device))
     flow.eval()
@@ -62,6 +62,7 @@ def reconstruct_flow_polarization(
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
     true_eta = target_test.flatten()
+    n_events = len(true_eta)
 
     # ----------------------------------------------------
     # Helper: Vectorized Lorentz Boost to W Rest Frame
@@ -121,23 +122,24 @@ def reconstruct_flow_polarization(
         return np.clip(cos_t, -1.0, 1.0)
 
     # ----------------------------------------------------
-    # Helper: Template Fit for Polarization Fractions
+    # Helper: Template Fit for Mixed Sample (f0, f1, f2)
     # ----------------------------------------------------
-    sign = -1.0 if is_w_plus else 1.0
-
     def fit_polarization(cos_array):
+        # Unbinned moments
         m_cos = np.mean(cos_array)
         m_cos2 = np.mean(cos_array**2)
         f0_m = 2.0 - 5.0 * m_cos2
-        fL_m = 0.5 * (1.0 - f0_m) + sign * m_cos
-        fR_m = 0.5 * (1.0 - f0_m) - sign * m_cos
+        f1_m = 0.5 * (1.0 - f0_m) - m_cos
+        f2_m = 0.5 * (1.0 - f0_m) + m_cos
 
-        def angular_pdf(cos_t, f0, fL):
-            fR = 1.0 - f0 - fL
+        # General spin-1 template for inclusive sample:
+        # P(cos_t) = 3/4*(1-cos_t^2)*f0 + 3/8*(1-cos_t)^2*f1 + 3/8*(1+cos_t)^2*f2
+        def angular_pdf(cos_t, f0, f1):
+            f2 = 1.0 - f0 - f1
             return (
                 0.75 * (1.0 - cos_t**2) * f0
-                + 0.375 * (1.0 + sign * cos_t) ** 2 * fL
-                + 0.375 * (1.0 - sign * cos_t) ** 2 * fR
+                + 0.375 * (1.0 - cos_t) ** 2 * f1
+                + 0.375 * (1.0 + cos_t) ** 2 * f2
             )
 
         counts, edges = np.histogram(
@@ -145,15 +147,15 @@ def reconstruct_flow_polarization(
         )
         centers = 0.5 * (edges[:-1] + edges[1:])
         popt, pcov = curve_fit(
-            angular_pdf, centers, counts, p0=[0.68, 0.10], bounds=(0, 1)
+            angular_pdf, centers, counts, p0=[0.80, 0.05], bounds=(0, 1)
         )
-        f0_fit, fL_fit = popt
-        fR_fit = 1.0 - f0_fit - fL_fit
+        f0_fit, f1_fit = popt
+        f2_fit = 1.0 - f0_fit - f1_fit
         errors = np.sqrt(np.diag(pcov))
 
         return {
-            "moments": (f0_m, fL_m, fR_m),
-            "fit": (f0_fit, fL_fit, fR_fit),
+            "moments": (f0_m, f1_m, f2_m),
+            "fit": (f0_fit, f1_fit, f2_fit),
             "errors": errors,
         }
 
@@ -161,29 +163,23 @@ def reconstruct_flow_polarization(
     # Helper: Reduced Chi-Squared (Two-Sample Poisson Test)
     # ----------------------------------------------------
     def compute_chi2_ndf(counts_test, counts_ref):
-        """
-        Computes chi2 / ndf comparing test distribution to reference (truth).
-        Uses Poisson variance: Var(diff) = Var(ref) + Var(scaled_test).
-        """
         n_ref = np.sum(counts_ref)
         n_test = np.sum(counts_test)
         scale = n_ref / n_test
 
         scaled_test = counts_test * scale
-
-        # Combined variance in each bin
         variance = counts_ref + (scale**2) * counts_test
 
-        # Consider non-empty bins (counts_ref > 5 for valid asymptotic normality)
         valid = (counts_ref > 5) & (variance > 0)
-
-        chi2 = np.sum((counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid])
-        ndf = np.sum(valid) - 1  # -1 for total normalization constraint
+        chi2 = np.sum(
+            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
+        )
+        ndf = np.sum(valid) - 1
         chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
         return chi2, ndf, chi2_ndf
 
     # ----------------------------------------------------
-    # 2. Compute Cos(theta*) Arrays
+    # 2. Compute Cos(theta*) for MC Truth and Flow
     # ----------------------------------------------------
     # MC Truth
     cos_truth = get_cos_theta_star(true_eta)
@@ -206,59 +202,94 @@ def reconstruct_flow_polarization(
     cos_flow = get_cos_theta_star(eta_samples).flatten()
     res_flow = fit_polarization(cos_flow)
 
-    # Baseline (min-|pz|)
-    cos_heuristic = None
-    res_heuristic = None
+    # ----------------------------------------------------
+    # 3. Compute Baselines (50/50 and min-|pz|)
+    # ----------------------------------------------------
+    cos_5050, res_5050 = None, None
+    cos_minpz, res_minpz = None, None
+
     if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Baseline 1: Random 50/50 Choice
+        rng = np.random.default_rng(seed=seed)
+        coin_flip = rng.choice([True, False], size=n_events)
+        eta_5050 = np.where(coin_flip, nb1_nu_eta, nb2_nu_eta)
+
+        cos_5050_raw = get_cos_theta_star(eta_5050)
+        valid_5050 = ~np.isnan(cos_5050_raw)
+        cos_5050 = cos_5050_raw[valid_5050]
+        res_5050 = fit_polarization(cos_5050)
+
+        # Baseline 2: Minimum |pz| (Paper Heuristic)
         pz1 = np.abs(met * np.sinh(nb1_nu_eta))
         pz2 = np.abs(met * np.sinh(nb2_nu_eta))
-        heuristic_eta = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
-        valid = ~np.isnan(heuristic_eta)
-        cos_heuristic = get_cos_theta_star(heuristic_eta[valid])
-        res_heuristic = fit_polarization(cos_heuristic)
+        eta_minpz = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+
+        cos_minpz_raw = get_cos_theta_star(eta_minpz)
+        valid_minpz = ~np.isnan(cos_minpz_raw)
+        cos_minpz = cos_minpz_raw[valid_minpz]
+        res_minpz = fit_polarization(cos_minpz)
 
     # ----------------------------------------------------
-    # 3. Calculate Chi-Squared vs. MC Truth
+    # 4. Calculate Chi-Squared vs. MC Truth
     # ----------------------------------------------------
     raw_truth, edges = np.histogram(cos_truth, bins=bins, range=(-1, 1))
     raw_flow, _ = np.histogram(cos_flow, bins=bins, range=(-1, 1))
 
     chi2_flow, ndf_flow, r_chi2_flow = compute_chi2_ndf(raw_flow, raw_truth)
 
-    r_chi2_heur = None
-    if cos_heuristic is not None:
-        raw_heur, _ = np.histogram(cos_heuristic, bins=bins, range=(-1, 1))
-        chi2_heur, ndf_heur, r_chi2_heur = compute_chi2_ndf(raw_heur, raw_truth)
+    r_chi2_5050 = None
+    r_chi2_minpz = None
+
+    if cos_5050 is not None:
+        raw_5050, _ = np.histogram(cos_5050, bins=bins, range=(-1, 1))
+        _, _, r_chi2_5050 = compute_chi2_ndf(raw_5050, raw_truth)
+
+    if cos_minpz is not None:
+        raw_minpz, _ = np.histogram(cos_minpz, bins=bins, range=(-1, 1))
+        _, _, r_chi2_minpz = compute_chi2_ndf(raw_minpz, raw_truth)
 
     # ----------------------------------------------------
-    # 4. Print Summary Table
+    # 5. Print Summary Table
     # ----------------------------------------------------
-    print("\n" + "=" * 80)
-    print(f"{'Method':<22} | {'f0':<16} | {'fL':<8} | {'fR':<8} | {'chi2 / ndf':<12}")
-    print("=" * 80)
+    print("\n" + "=" * 85)
+    print(
+        f"{'Method':<22} | {'f0 (Longitudinal)':<18} | {'f1':<8} | {'f2':<8} | {'chi2 / ndf':<12}"
+    )
+    print("=" * 85)
     print(
         f"{'1. MC Truth (Ref)':<22} | {res_truth['fit'][0]:.4f} ± {res_truth['errors'][0]:.4f}   | {res_truth['fit'][1]:.4f} | {res_truth['fit'][2]:.4f} | {'—':<12}"
     )
     print(
         f"{'2. Flow Samples':<22} | {res_flow['fit'][0]:.4f} ± {res_flow['errors'][0]:.4f}   | {res_flow['fit'][1]:.4f} | {res_flow['fit'][2]:.4f} | {r_chi2_flow:<12.3f}"
     )
-    if res_heuristic:
+    if res_5050:
         print(
-            f"{'3. Baseline (min|pz|)':<22} | {res_heuristic['fit'][0]:.4f} ± {res_heuristic['errors'][0]:.4f}   | {res_heuristic['fit'][1]:.4f} | {res_heuristic['fit'][2]:.4f} | {r_chi2_heur:<12.3f}"
+            f"{'3. Baseline (50/50)':<22} | {res_5050['fit'][0]:.4f} ± {res_5050['errors'][0]:.4f}   | {res_5050['fit'][1]:.4f} | {res_5050['fit'][2]:.4f} | {r_chi2_5050:<12.3f}"
         )
-    print("=" * 80)
-    print(f"Flow Compatibility: chi2 = {chi2_flow:.2f}, ndf = {ndf_flow}, reduced chi2 = {r_chi2_flow:.3f}")
+    if res_minpz:
+        print(
+            f"{'4. Baseline (min-|pz|)':<22} | {res_minpz['fit'][0]:.4f} ± {res_minpz['errors'][0]:.4f}   | {res_minpz['fit'][1]:.4f} | {res_minpz['fit'][2]:.4f} | {r_chi2_minpz:<12.3f}"
+        )
+    print("=" * 85)
 
     # ----------------------------------------------------
-    # 5. Plotting: Distribution & Ratio
+    # 6. Plotting: Distribution & Ratio
     # ----------------------------------------------------
     fig, (ax_main, ax_ratio) = plt.subplots(
-        2, 1, figsize=(9, 7), sharex=True, gridspec_kw={"height_ratios": [3.5, 1.2]}
+        2,
+        1,
+        figsize=(9, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.5, 1.2]},
     )
 
     centers = 0.5 * (edges[:-1] + edges[1:])
-    norm_truth, _ = np.histogram(cos_truth, bins=bins, range=(-1, 1), density=True)
-    norm_flow, _ = np.histogram(cos_flow, bins=bins, range=(-1, 1), density=True)
+    norm_truth, _ = np.histogram(
+        cos_truth, bins=bins, range=(-1, 1), density=True
+    )
+    norm_flow, _ = np.histogram(
+        cos_flow, bins=bins, range=(-1, 1), density=True
+    )
 
     # Main Panel
     ax_main.hist(
@@ -280,31 +311,76 @@ def reconstruct_flow_polarization(
         label=rf"Flow $p(\eta_\nu|x)$ ($f_0 = {res_flow['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_flow:.2f}$)",
     )
 
-    if cos_heuristic is not None:
-        norm_heur, _ = np.histogram(cos_heuristic, bins=bins, range=(-1, 1), density=True)
+    if cos_5050 is not None:
+        norm_5050, _ = np.histogram(
+            cos_5050, bins=bins, range=(-1, 1), density=True
+        )
         ax_main.hist(
             centers,
             bins=edges,
-            weights=norm_heur,
+            weights=norm_5050,
             histtype="step",
             linestyle="--",
             linewidth=1.8,
             color="crimson",
-            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_heuristic['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_heur:.1f}$)",
+            label=rf"Baseline (50/50) ($f_0 = {res_5050['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.1f}$)",
         )
 
-    ax_main.set_ylabel(r"$\frac{1}{\sigma}\frac{d\sigma}{d\cos\theta^*}$", fontsize=12)
-    ax_main.set_title(r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$)", fontsize=13)
-    ax_main.legend(fontsize=9.5, loc="upper right")
+    if cos_minpz is not None:
+        norm_minpz, _ = np.histogram(
+            cos_minpz, bins=bins, range=(-1, 1), density=True
+        )
+        ax_main.hist(
+            centers,
+            bins=edges,
+            weights=norm_minpz,
+            histtype="step",
+            linestyle=":",
+            linewidth=2.0,
+            color="darkorange",
+            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_minpz['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.1f}$)",
+        )
+
+    ax_main.set_ylabel(
+        r"$\frac{1}{\sigma}\frac{d\sigma}{d\cos\theta^*}$", fontsize=12
+    )
+    ax_main.set_title(
+        r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$)", fontsize=13
+    )
+    ax_main.legend(fontsize=9.0, loc="upper right")
     ax_main.grid(True, alpha=0.3)
 
     # Ratio Panel (Method / Truth)
     ratio_flow = norm_flow / np.maximum(norm_truth, 1e-6)
-    ax_ratio.plot(centers, ratio_flow, "o-", color="royalblue", ms=3.5, label="Flow / Truth")
-    if cos_heuristic is not None:
-        ratio_heur = norm_heur / np.maximum(norm_truth, 1e-6)
+    ax_ratio.plot(
+        centers,
+        ratio_flow,
+        "o-",
+        color="royalblue",
+        ms=3.5,
+        label="Flow / Truth",
+    )
+
+    if cos_5050 is not None:
+        ratio_5050 = norm_5050 / np.maximum(norm_truth, 1e-6)
         ax_ratio.plot(
-            centers, ratio_heur, "s--", color="crimson", ms=3.0, label="Baseline / Truth"
+            centers,
+            ratio_5050,
+            "s--",
+            color="crimson",
+            ms=3.0,
+            label="50/50 / Truth",
+        )
+
+    if cos_minpz is not None:
+        ratio_minpz = norm_minpz / np.maximum(norm_truth, 1e-6)
+        ax_ratio.plot(
+            centers,
+            ratio_minpz,
+            "^:",
+            color="darkorange",
+            ms=3.0,
+            label="min-$|p_z|$ / Truth",
         )
 
     ax_ratio.axhline(1.0, color="black", linestyle="--", alpha=0.8)
@@ -312,7 +388,7 @@ def reconstruct_flow_polarization(
     ax_ratio.set_xlabel(r"$\cos\theta^*$ (Helicity frame)", fontsize=11)
     ax_ratio.set_ylabel("Ratio to Truth", fontsize=10)
     ax_ratio.grid(True, alpha=0.3)
-    ax_ratio.legend(fontsize=8, loc="lower right")
+    ax_ratio.legend(fontsize=7.5, loc="lower right", ncol=3)
 
     plt.tight_layout()
     plt.show()
@@ -320,16 +396,18 @@ def reconstruct_flow_polarization(
     return {
         "res_truth": res_truth,
         "res_flow": res_flow,
-        "chi2_flow": chi2_flow,
-        "ndf_flow": ndf_flow,
+        "res_5050": res_5050,
+        "res_minpz": res_minpz,
         "r_chi2_flow": r_chi2_flow,
-        "r_chi2_heur": r_chi2_heur,
+        "r_chi2_5050": r_chi2_5050,
+        "r_chi2_minpz": r_chi2_minpz,
     }
 
 
 
 if __name__ == "__main__":
-    time = '20261001-224739'
+    time = '20261003-225704'
+    data_filename = 'new_Input_WLH_NeutrinoEtaFindingEvaluation_3rd_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -338,18 +416,16 @@ if __name__ == "__main__":
     n_features = len(FEATURES)
     n_target = len(TARGET)
 
-    df = pd.read_csv('data.csv', encoding_errors='ignore')
-    features_data = df[FEATURES].values
-    target_data = df[TARGET].values
-    features, target = read_file("data.csv", FEATURES, TARGET)
+    # features, target = read_file(data_filename, FEATURES, TARGET)
+    features_test, target_test = read_file(data_filename, FEATURES, TARGET)
 
-    features_train, features_temp, target_train, target_temp = train_test_split(
-        features, target, test_size=hyperparameters["data_split"]["train_val_size"],
-        random_state=hyperparameters["data_split"]["random_state"])
-
-    features_val, features_test, target_val, target_test = train_test_split(
-        features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
-        random_state=hyperparameters["data_split"]["random_state"])
+    # features_train, features_temp, target_train, target_temp = train_test_split(
+    #     features, target, test_size=hyperparameters["data_split"]["train_val_size"],
+    #     random_state=hyperparameters["data_split"]["random_state"])
+    #
+    # features_val, features_test, target_val, target_test = train_test_split(
+    #     features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
+    #     random_state=hyperparameters["data_split"]["random_state"])
 
 
     # Load Scalers
@@ -367,6 +443,7 @@ if __name__ == "__main__":
 
     # Extract analytical solutions from DataFrame if available
 
+    df = pd.read_csv(data_filename, encoding_errors='ignore')
     df_test_raw = df.iloc[-len(target_test):]  # or matching test slice
     nb1_nu_eta_test = df_test_raw['NB1_nu_eta'].values
     nb2_nu_eta_test = df_test_raw['NB2_nu_eta'].values
@@ -381,6 +458,5 @@ if __name__ == "__main__":
         nb2_nu_eta=nb2_nu_eta_test,
         num_samples=500,
         batch_size=512,
-        is_w_plus=True,
         bins=50
     )
