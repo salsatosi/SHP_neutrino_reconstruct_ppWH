@@ -137,9 +137,9 @@ def reconstruct_flow_polarization(
         def angular_pdf(cos_t, f0, f1):
             f2 = 1.0 - f0 - f1
             return (
-                0.75 * (1.0 - cos_t**2) * f0
+                (0.75 * (1.0 - cos_t**2) * f0
                 + 0.375 * (1.0 - cos_t) ** 2 * f1
-                + 0.375 * (1.0 + cos_t) ** 2 * f2
+                + 0.375 * (1.0 + cos_t) ** 2 * f2)
             )
 
         counts, edges = np.histogram(
@@ -153,10 +153,14 @@ def reconstruct_flow_polarization(
         f2_fit = 1.0 - f0_fit - f1_fit
         errors = np.sqrt(np.diag(pcov))
 
+        sigma_f0 = errors[0]
+        sigma_f1 = errors[1]
+        sigma_f2 = np.sqrt(sigma_f0**2+sigma_f1**2)
+
         return {
             "moments": (f0_m, f1_m, f2_m),
             "fit": (f0_fit, f1_fit, f2_fit),
-            "errors": errors,
+            "errors": (sigma_f0,sigma_f1,sigma_f2),
         }
 
     # ----------------------------------------------------
@@ -257,18 +261,18 @@ def reconstruct_flow_polarization(
     )
     print("=" * 85)
     print(
-        f"{'1. MC Truth (Ref)':<22} | {res_truth['fit'][0]:.4f} ± {res_truth['errors'][0]:.4f}   | {res_truth['fit'][1]:.4f} | {res_truth['fit'][2]:.4f} | {'—':<12}"
+        f"{'1. MC Truth (Ref)':<22} | {res_truth['fit'][0]:.4f} ± {res_truth['errors'][0]:.4f}   | {res_truth['fit'][1]:.4f} ± {res_truth['errors'][1]:.4f} | {res_truth['fit'][2]:.4f} ± {res_truth['errors'][2]:.4f} | {'—':<12}"
     )
     print(
-        f"{'2. Flow Samples':<22} | {res_flow['fit'][0]:.4f} ± {res_flow['errors'][0]:.4f}   | {res_flow['fit'][1]:.4f} | {res_flow['fit'][2]:.4f} | {r_chi2_flow:<12.3f}"
+        f"{'2. Flow Samples':<22} | {res_flow['fit'][0]:.4f} ± {res_flow['errors'][0]:.4f}   | {res_flow['fit'][1]:.4f} ± {res_flow['errors'][1]:.4f} | {res_flow['fit'][2]:.4f} ± {res_flow['errors'][2]:.4f} | {r_chi2_flow:<12.3f}"
     )
     if res_5050:
         print(
-            f"{'3. Baseline (50/50)':<22} | {res_5050['fit'][0]:.4f} ± {res_5050['errors'][0]:.4f}   | {res_5050['fit'][1]:.4f} | {res_5050['fit'][2]:.4f} | {r_chi2_5050:<12.3f}"
+            f"{'3. Baseline (50/50)':<22} | {res_5050['fit'][0]:.4f} ± {res_5050['errors'][0]:.4f}   | {res_5050['fit'][1]:.4f} ± {res_5050['errors'][1]:.4f} | {res_5050['fit'][2]:.4f} ± {res_5050['errors'][2]:.4f} | {r_chi2_5050:<12.3f}"
         )
     if res_minpz:
         print(
-            f"{'4. Baseline (min-|pz|)':<22} | {res_minpz['fit'][0]:.4f} ± {res_minpz['errors'][0]:.4f}   | {res_minpz['fit'][1]:.4f} | {res_minpz['fit'][2]:.4f} | {r_chi2_minpz:<12.3f}"
+            f"{'4. Baseline (min-|pz|)':<22} | {res_minpz['fit'][0]:.4f} ± {res_minpz['errors'][0]:.4f}   | {res_minpz['fit'][1]:.4f} ± {res_minpz['errors'][1]:.4f} | {res_minpz['fit'][2]:.4f} ± {res_minpz['errors'][2]:.4f} | {r_chi2_minpz:<12.3f}"
         )
     print("=" * 85)
 
@@ -406,7 +410,7 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261004-193333'
+    time = '20261004-093834'
     data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
