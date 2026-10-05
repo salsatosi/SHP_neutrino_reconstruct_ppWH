@@ -662,7 +662,6 @@ def plot_event_posteriors(
             ax.set_xlabel(r"$\eta_\nu$", fontsize=10)
             ax.set_ylabel("Probability Density", fontsize=10)
             ax.set_xlim(grid_range)
-            ax.grid(True, alpha=0.3)
             ax.legend(fontsize=7.5, loc="upper right")
 
     # Hide unused subplots if num_events is not a multiple of cols
@@ -840,7 +839,6 @@ def invariant_mass_reconstruction(
     axes[0].set_xlabel(r"$m_W$ [GeV]", fontsize=11)
     axes[0].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
     axes[0].set_title(r"$W$ Boson Invariant Mass Reconstruction", fontsize=12)
-    axes[0].grid(True, alpha=0.3)
     axes[0].legend(fontsize=9)
 
     # --- Plot mWH ---
@@ -866,7 +864,6 @@ def invariant_mass_reconstruction(
     axes[1].set_xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
     axes[1].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
     axes[1].set_title(r"Total $WH$ Invariant Mass Reconstruction", fontsize=12)
-    axes[1].grid(True, alpha=0.3)
     axes[1].legend(fontsize=9)
 
     plt.tight_layout()
@@ -1128,7 +1125,7 @@ def correlation_test(
         ax.set_xlabel(r"True $\eta_\nu$", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(rf"{title} ($r = {r_val:.3f}$)", fontsize=12)
-        ax.grid(True, alpha=0.3)
+
         ax.legend(loc="upper left", fontsize=8.5)
 
     # Row 1: Flow Progression
@@ -1510,7 +1507,7 @@ def angle_comparison(
     # 3. Calculate Chi2 and Prepare Plotting
     # ----------------------------------------------------
     plot_vars = [
-        ("costhetastar", r"$\cos\theta^*$", (-1.0, 1.0)),
+        ("costhetastar", r"$\cos\theta^*_{VH}$", (-1.0, 1.0)),
         ("costheta1", r"$\cos\theta_1$", (-1.0, 1.0)),
         ("Phi1", r"$|\Phi_1|$", (0.0, np.pi)),
         ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$", (0.0, np.pi)),
@@ -1600,7 +1597,7 @@ def angle_comparison(
         ax.set_xlabel(label, fontsize=11)
         ax.set_ylabel("Normalized Density", fontsize=10)
         ax.set_xlim(rng)
-        ax.grid(True, alpha=0.3)
+
         ax.legend(fontsize=9, loc="upper right")
 
     print("=" * 95)
@@ -1622,8 +1619,8 @@ def angle_comparison(
 
 
 if __name__ == "__main__":
-    time = '20261004-193333'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    time = '20261004-093834'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -1657,116 +1654,116 @@ if __name__ == "__main__":
         hyperparameters=hyperparameters)
 
 
-    # # ----------------------------
-    # # Coverage test
-    #
-    # coverage = interval_coverage(
+    # ----------------------------
+    # Coverage test
+
+    coverage = interval_coverage(
+        flow=flow,
+        dataset=test_dataset,
+        levels=(0.50,0.68,0.90,0.95),
+        model_name=model_name
+    )
+
+    # ----------------------------
+    # Shuffle test
+
+    normal_nll, shuffled_nll = shuffled_context_nll(
+        flow=flow,
+        dataset=test_dataset,
+        batch_size=512,
+        model_name=model_name
+    )
+
+    # ----------------------------
+    # Conditional Calibration
+
+    # index = 'ChargedLep_E'
+    # binned_coverage(
     #     flow=flow,
     #     dataset=test_dataset,
-    #     levels=(0.50,0.68,0.90,0.95),
-    #     model_name=model_name
-    # )
-    #
-    # # ----------------------------
-    # # Shuffle test
-    #
-    # normal_nll, shuffled_nll = shuffled_context_nll(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     batch_size=512,
-    #     model_name=model_name
-    # )
-    #
-    # # ----------------------------
-    # # Conditional Calibration
-    #
-    # # index = 'ChargedLep_E'
-    # # binned_coverage(
-    # #     flow=flow,
-    # #     dataset=test_dataset,
-    # #     feature_index=FEATURES.index(index),
-    # #     model_name=model_name,
-    # # )
-    #
-    # # ----------------------------
-    # # PIT Value test
-    #
-    # pit_values = pit_test(
-    #     flow=flow,
-    #     dataset=test_dataset,
+    #     feature_index=FEATURES.index(index),
     #     model_name=model_name,
-    #     batch_size=512,
-    #     num_bins=20
     # )
-    #
-    # # ----------------------------
-    # # Point Reconstruction test
-    #
-    # results = point_reconstruction_test(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     model_name=model_name,
-    #     num_samples=2000,
-    #     estimator="mode"
-    # )
-    #
-    # residuals = results["residual"]
-    #
-    # plt.figure(figsize=(8, 5))
-    #
-    # plt.hist(
-    #     residuals,
-    #     bins=100,
-    #     density=True
-    # )
-    #
-    # plt.axvline(
-    #     0,
-    #     linestyle="--",
-    #     label="Zero residual"
-    # )
-    #
-    # plt.xlabel(
-    #     r"$\Delta \hat{\eta}_\nu^{mode}$"
-    # )
-    # plt.ylabel("Probability Density")
-    # plt.title(r"$\eta_\nu$ Reconstruction Residual")
-    # plt.legend()
-    # plt.tight_layout()
-    # plt.show()
-    #
-    # # ----------------------------
-    # # Multimodality / Posterior Shape Visualization
-    #
-    # df = pd.read_csv(data_filename,encoding_errors='ignore')
-    # nb1_nu_eta = df['NB1_nu_eta'].values
-    # nb2_nu_eta = df['NB2_nu_eta'].values
-    #
-    # plot_event_posteriors(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     model_name=model_name,
-    #     nb1_nu_eta=nb1_nu_eta,
-    #     nb2_nu_eta=nb2_nu_eta,
-    #     num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
-    #     grid_range=(-5.0, 5.0),
-    #     num_grid_points=1000,
-    # )
-    #
-    #
-    # # ----------------------------
-    # # Invariant Mass Reconstruction Test
-    #
-    # invariant_mass_reconstruction(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     num_samples=500,
-    #     batch_size=512,
-    #     num_bins=120
-    # )
+
+    # ----------------------------
+    # PIT Value test
+
+    pit_values = pit_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        batch_size=512,
+        num_bins=20
+    )
+
+    # ----------------------------
+    # Point Reconstruction test
+
+    results = point_reconstruction_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        num_samples=2000,
+        estimator="mode"
+    )
+
+    residuals = results["residual"]
+
+    plt.figure(figsize=(8, 5))
+
+    plt.hist(
+        residuals,
+        bins=100,
+        density=True
+    )
+
+    plt.axvline(
+        0,
+        linestyle="--",
+        label="Zero residual"
+    )
+
+    plt.xlabel(
+        r"$\Delta \hat{\eta}_\nu^{mode}$"
+    )
+    plt.ylabel("Probability Density")
+    plt.title(r"$\eta_\nu$ Reconstruction Residual")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # ----------------------------
+    # Multimodality / Posterior Shape Visualization
+
+    df = pd.read_csv(data_filename,encoding_errors='ignore')
+    nb1_nu_eta = df['NB1_nu_eta'].values
+    nb2_nu_eta = df['NB2_nu_eta'].values
+
+    plot_event_posteriors(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        nb1_nu_eta=nb1_nu_eta,
+        nb2_nu_eta=nb2_nu_eta,
+        num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
+        grid_range=(-5.0, 5.0),
+        num_grid_points=1000,
+    )
+
+
+    # ----------------------------
+    # Invariant Mass Reconstruction Test
+
+    invariant_mass_reconstruction(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        num_samples=500,
+        batch_size=512,
+        num_bins=120
+    )
 
     # ----------------------------
     # Correlation Test
@@ -1792,23 +1789,23 @@ if __name__ == "__main__":
         range_eta=(-4.5, 4.5),
     )
 
-    # # ----------------------------
-    # # Angle Comparison
-    #
-    # df = pd.read_csv(data_filename,encoding_errors='ignore')
-    # nb1_nu_eta = df['NB1_nu_eta'].values
-    # nb2_nu_eta = df['NB2_nu_eta'].values
-    #
-    # angles_result = angle_comparison(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     nb1_nu_eta=nb1_nu_eta,
-    #     nb2_nu_eta=nb2_nu_eta,
-    #     batch_size=512,
-    #     num_grid=500,
-    #     range_eta=(-4.5, 4.5),
-    #     bins=40,
-    # )
+    # ----------------------------
+    # Angle Comparison
+
+    df = pd.read_csv(data_filename,encoding_errors='ignore')
+    nb1_nu_eta = df['NB1_nu_eta'].values
+    nb2_nu_eta = df['NB2_nu_eta'].values
+
+    angles_result = angle_comparison(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        nb1_nu_eta=nb1_nu_eta,
+        nb2_nu_eta=nb2_nu_eta,
+        batch_size=512,
+        num_grid=500,
+        range_eta=(-4.5, 4.5),
+        bins=40,
+    )
