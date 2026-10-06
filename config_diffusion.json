@@ -1,0 +1,35 @@
+{
+    "random_seed": 42,
+    "data_split": {
+        "train_val_size": 0.3,
+        "random_state": 42
+    },
+    "diffusion": {
+        "timesteps": 100,
+        "beta_start": 0.0001,
+        "beta_end": 0.02,
+        "beta_schedule": "linear",
+        "time_embed_dim": 32,
+        "hidden_features": 256,
+        "num_layers": 4,
+        "dropout_probability": 0.10,
+        "activation": "silu"
+    },
+    "training": {
+        "learning_rate": 3e-4,
+        "target_noise_std": 0.0,
+        "epochs": 100,
+        "train_batch_size": 512,
+        "validation_batch_size": 1024,
+        "test_batch_size": 512,
+        "train_shuffle": true,
+        "validation_shuffle": false,
+        "test_shuffle": false,
+        "weight_decay": 0.0001,
+        "max_grad_norm": 5.0
+    },
+    "scheduler": {
+        "type": "cosine",
+        "eta_min": 1e-06
+    }
+}
