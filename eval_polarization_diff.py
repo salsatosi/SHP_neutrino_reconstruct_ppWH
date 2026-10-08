@@ -443,9 +443,9 @@ def reconstruct_diffusion_polarization(
 
 
 if __name__ == "__main__":
-    time = "20261006-223520"
+    time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameter_file = f"models/hyperparameters_diff_{time}.json"
