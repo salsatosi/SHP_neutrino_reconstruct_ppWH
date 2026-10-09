@@ -353,14 +353,31 @@ def reconstruct_flow_polarization(
     ax_main.legend(fontsize=9.0, loc="upper right")
 
     # Ratio Panel (Method / Truth)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    # 2. Compute Ratio
     ratio_flow = norm_flow / np.maximum(norm_truth, 1e-6)
-    ax_ratio.plot(
-        centers,
-        ratio_flow,
-        "o-",
+
+    # 3. Propagate Poisson Statistical Uncertainties
+    # Avoid division by zero in empty bins
+    valid_bins = (raw_flow > 0) & (raw_truth > 0)
+    ratio_err_flow = np.zeros_like(ratio_flow)
+    ratio_err_flow[valid_bins] = ratio_flow[valid_bins] * np.sqrt(
+        1.0 / raw_flow[valid_bins] + 1.0 / raw_truth[valid_bins]
+    )
+
+    # Ratio Panel (Method / Truth)
+    ax_ratio.errorbar(
+        centers[valid_bins],
+        ratio_flow[valid_bins],
+        yerr=ratio_err_flow[valid_bins],
+        fmt="o-",
         color="royalblue",
-        ms=3.5,
-        label="Flow / Truth",
+        ms=2,
+        elinewidth=1.0,
+        capsize=0,
+        capthick=1.0,
+        label="Model / Truth",
     )
 
     if cos_5050 is not None:
@@ -370,7 +387,7 @@ def reconstruct_flow_polarization(
             ratio_5050,
             "s--",
             color="crimson",
-            ms=3.0,
+            ms=2.0,
             label="50/50 / Truth",
         )
 
@@ -381,7 +398,7 @@ def reconstruct_flow_polarization(
             ratio_minpz,
             "^:",
             color="darkorange",
-            ms=3.0,
+            ms=2.0,
             label="min-$|p_z|$ / Truth",
         )
 
