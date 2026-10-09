@@ -360,7 +360,7 @@ def reconstruct_diffusion_polarization(
             linestyle="--",
             linewidth=1.8,
             color="crimson",
-            label=rf"Baseline (50/50) ($f_0 = {res_5050['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.1f}$)",
+            label=rf"Baseline (50/50) ($f_0 = {res_5050['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.2f}$)",
         )
 
     if cos_minpz is not None:
@@ -375,7 +375,7 @@ def reconstruct_diffusion_polarization(
             linestyle=":",
             linewidth=2.0,
             color="darkorange",
-            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_minpz['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.1f}$)",
+            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_minpz['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.2f}$)",
         )
 
     ax_main.set_ylabel(
@@ -387,16 +387,32 @@ def reconstruct_diffusion_polarization(
     )
     ax_main.legend(fontsize=9.0, loc="upper right")
 
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    # 2. Compute Ratio
+    ratio_diff = norm_diff / np.maximum(norm_truth, 1e-6)
+
+    # 3. Propagate Poisson Statistical Uncertainties
+    # Avoid division by zero in empty bins
+    valid_bins = (raw_diff > 0) & (raw_truth > 0)
+    ratio_err_diff = np.zeros_like(ratio_diff)
+    ratio_err_diff[valid_bins] = ratio_diff[valid_bins] * np.sqrt(
+        1.0 / raw_diff[valid_bins] + 1.0 / raw_truth[valid_bins]
+    )
+
 
     # Ratio Panel (Method / Truth)
-    ratio_diff = norm_diff / np.maximum(norm_truth, 1e-6)
-    ax_ratio.plot(
-        centers,
-        ratio_diff,
-        "o-",
+    ax_ratio.errorbar(
+        centers[valid_bins],
+        ratio_diff[valid_bins],
+        yerr=ratio_err_diff[valid_bins],
+        fmt="o-",
         color="royalblue",
-        ms=3.5,
-        label="Diffusion / Truth",
+        ms=2,
+        elinewidth=1.0,
+        capsize=0,
+        capthick=1.0,
+        label="Model / Truth",
     )
 
     if cos_5050 is not None:
@@ -406,7 +422,7 @@ def reconstruct_diffusion_polarization(
             ratio_5050,
             "s--",
             color="crimson",
-            ms=3.0,
+            ms=2.0,
             label="50/50 / Truth",
         )
 
@@ -417,7 +433,7 @@ def reconstruct_diffusion_polarization(
             ratio_minpz,
             "^:",
             color="darkorange",
-            ms=3.0,
+            ms=2.0,
             label="min-$|p_z|$ / Truth",
         )
 
@@ -443,9 +459,9 @@ def reconstruct_diffusion_polarization(
 
 
 if __name__ == "__main__":
-    time = "20261008-222146"
+    time = "20261006-223520"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameter_file = f"models/hyperparameters_diff_{time}.json"
