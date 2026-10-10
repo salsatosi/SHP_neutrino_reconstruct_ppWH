@@ -17,6 +17,7 @@ from train_diffusion import (
     ConditionalDDPM,
     load_hyperparameters,
 )
+from scipy.stats import gaussian_kde
 
 
 
@@ -586,188 +587,186 @@ def invariant_mass_reconstruction_diffusion(
     }
 
 
-def plot_diffusion_posteriors(
+def plot_event_posteriors_diffusion(
     diffusion_model,
-    features_test_scaled,
-    target_test,
+    dataset,
     model_name,
-    scaler_target=None,
-    nb1_eta=None,
-    nb2_eta=None,
+    scaler_target=None,  # Pass scaler_target used in training
+    nb1_nu_eta=None,  # 1D numpy array of first quadratic solutions
+    nb2_nu_eta=None,  # 1D numpy array of second quadratic solutions
     event_indices=None,
-    num_events=4,
-    num_samples=1000,
-    range_eta=(-4.5, 4.5),
-    bins=50,
+    num_random_events=6,
+    num_samples_per_event=500,  # Number of posterior draws per event
+    grid_range=(-5.0, 5.0),
     device=None,
-    output_filename=None,
 ):
-    """Generates event-by-event posterior distribution plots p(eta_nu | x)
 
-    for representative test events, overlaying true eta and analytical roots.
-    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
     diffusion_model.eval()
 
-    target_flat = target_test.flatten()
-
-    # -------------------------------------------------------------------------
-    # 1. Automatic Event Selection (if event_indices not provided)
-    # Picks diverse events: separated roots, close roots, central, and forward
-    # -------------------------------------------------------------------------
+    # 1. Select which event indices to visualize
     if event_indices is None:
-        if nb1_eta is not None and nb2_eta is not None:
-            valid_mask = (
-                ~np.isnan(nb1_eta)
-                & ~np.isnan(nb2_eta)
-                & ~np.isinf(nb1_eta)
-                & ~np.isinf(nb2_eta)
-            )
-            valid_idx = np.where(valid_mask)[0]
-            root_diff = np.abs(nb1_eta[valid_idx] - nb2_eta[valid_idx])
+        rng = np.random.default_rng(42)
+        event_indices = rng.choice(
+            len(dataset), size=num_random_events, replace=False
+        )
 
-            # Pick 1 widely separated root, 1 close root, 1 positive, 1 negative
-            i_bimodal = valid_idx[np.argsort(-root_diff)[len(valid_idx) // 10]]
-            i_unimodal = valid_idx[np.argsort(root_diff)[len(valid_idx) // 10]]
-            i_forward = valid_idx[
-                np.argsort(-target_flat[valid_idx])[len(valid_idx) // 20]
-            ]
-            i_backward = valid_idx[
-                np.argsort(target_flat[valid_idx])[len(valid_idx) // 20]
-            ]
+    num_events = len(event_indices)
+    cols = 3
+    rows = int(np.ceil(num_events / cols))
 
-            event_indices = [i_bimodal, i_unimodal, i_forward, i_backward][:num_events]
-        else:
-            event_indices = [10, 42, 105, 250][:num_events]
+    grid_eval = np.linspace(grid_range[0], grid_range[1], 600)
 
-    n_plots = len(event_indices)
-    fig, axes = plt.subplots(1, n_plots, figsize=(4.8 * n_plots, 4.5), sharey=False)
-    if n_plots == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(rows, cols, figsize=(5.8 * cols, 4.4 * rows))
+    axes = np.array(axes).reshape(-1)
 
     print(
-        f"Drawing {num_samples} posterior samples for {n_plots} events on {device}..."
+        f"Generating posterior distributions for {num_events} events using Diffusion Model..."
     )
 
     with torch.no_grad():
-        for ax_idx, evt_id in enumerate(event_indices):
-            # Extract single event context and replicate for num_samples
-            ctx_single = features_test_scaled[evt_id : evt_id + 1]
-            ctx_tensor = torch.tensor(ctx_single, dtype=torch.float32).to(device)
-            ctx_replicated = ctx_tensor.repeat(num_samples, 1)
+        for i, idx in enumerate(event_indices):
+            features, target = dataset[idx]
 
-            # 1. Stochastic Posterior Sampling (Langevin draws, eta=1.0 or standard DDPM)
-            if hasattr(diffusion_model, "sample_ddim"):
-                samples = diffusion_model.sample_ddim(ctx_replicated, eta=1.0)
-            else:
-                samples = diffusion_model.sample(ctx_replicated)
+            # True target value in physical coordinates
+            true_eta = target.item()
+            if (
+                scaler_target is not None
+                and np.std(dataset.tensors[1].numpy()) < 1.2
+            ):
+                true_eta = scaler_target.inverse_transform([[true_eta]])[0, 0]
 
-            samples_np = samples.cpu().numpy().flatten()
+            # Replicate context K times to draw K stochastic posterior samples
+            # Shape: [num_samples_per_event, n_features]
+            bx = (
+                features.unsqueeze(0)
+                .repeat(num_samples_per_event, 1)
+                .to(device)
+            )
 
-            # 2. Deterministic Point Prediction (DDIM eta=0.0)
-            if hasattr(diffusion_model, "sample_ddim"):
-                det_pred = diffusion_model.sample_ddim(ctx_tensor, eta=0.0)
-                det_np = det_pred.cpu().numpy().flatten()
-            else:
-                det_np = None
+            # Draw stochastic posterior samples (Langevin / DDPM dynamics)
+            raw_samples = diffusion_model.sample(bx).cpu().numpy()
 
-            # Unscale back to physical pseudorapidity
+            # Unscale to physical pseudorapidity
             if scaler_target is not None:
-                samples_np = scaler_target.inverse_transform(
-                    samples_np.reshape(-1, 1)
+                samples_phys = scaler_target.inverse_transform(
+                    raw_samples
                 ).flatten()
-                if det_np is not None:
-                    det_np = scaler_target.inverse_transform(
-                        det_np.reshape(-1, 1)
-                    ).flatten()
+            else:
+                samples_phys = raw_samples.flatten()
 
-            # Physical Truth
-            t_true = target_flat[evt_id]
+            # Filter any rare unphysical outlier samples for smooth KDE
+            valid_samples = samples_phys[
+                (samples_phys >= grid_range[0])
+                & (samples_phys <= grid_range[1])
+            ]
 
-            # -----------------------------------------------------------------
-            # Plotting the Posterior Density
-            # -----------------------------------------------------------------
-            ax = axes[ax_idx]
+            # Construct smooth Continuous Density via Gaussian KDE
+            kde = gaussian_kde(valid_samples, bw_method=0.18)
+            prob_density = kde(grid_eval)
 
-            # Diffusion Posterior Histogram
+            # Find the peak mode
+            mode_eta = grid_eval[np.argmax(prob_density)]
+
+            ax = axes[i]
+
+            # ----------------------------------------------------
+            # 1. Plot Diffusion Posterior (Smooth KDE + Light Histogram)
+            # ----------------------------------------------------
             ax.hist(
-                samples_np,
-                bins=bins,
-                range=range_eta,
+                valid_samples,
+                bins=40,
+                range=grid_range,
                 density=True,
-                alpha=0.55,
+                alpha=0.25,
                 color="royalblue",
-                edgecolor="navy",
-                lw=0.5,
-                label=rf"Diffusion $p(\eta_\nu|\mathbf{{x}})$",
+                edgecolor="none",
             )
-
-            # True Neutrino Coordinate
-            ax.axvline(
-                t_true,
-                color="black",
+            ax.plot(
+                grid_eval,
+                prob_density,
+                color="royalblue",
                 lw=2.2,
-                linestyle="-",
-                label=rf"True $\eta_\nu = {t_true:.2f}$",
-                zorder=5,
+                label=r"Diffusion $p(\eta_\nu \mid \mathbf{x})$",
             )
 
-            # Deterministic DDIM Prediction (eta = 0)
-            if det_np is not None:
-                ax.axvline(
-                    det_np[0],
-                    color="purple",
-                    lw=1.8,
-                    linestyle="-.",
-                    label=rf"DDIM ($\eta=0$) $= {det_np[0]:.2f}$",
-                    zorder=4,
-                )
+            # ----------------------------------------------------
+            # 2. Mark True eta_nu
+            # ----------------------------------------------------
+            ax.axvline(
+                true_eta,
+                color="red",
+                linestyle="--",
+                lw=2.0,
+                label=rf"True $\eta_\nu$ ({true_eta:.2f})",
+                zorder=4,
+            )
 
-            # Analytical Quadratic Roots (NB1 and NB2)
-            if nb1_eta is not None and not np.isnan(nb1_eta[evt_id]):
-                ax.axvline(
-                    nb1_eta[evt_id],
-                    color="crimson",
-                    lw=1.6,
-                    linestyle="--",
-                    label=rf"Root 1 $= {nb1_eta[evt_id]:.2f}$",
-                    zorder=3,
-                )
+            # ----------------------------------------------------
+            # 3. Mark Diffusion Mode (Peak)
+            # ----------------------------------------------------
+            ax.axvline(
+                mode_eta,
+                color="forestgreen",
+                linestyle=":",
+                lw=1.8,
+                label=rf"Mode ({mode_eta:.2f})",
+                zorder=3,
+            )
 
-            if nb2_eta is not None and not np.isnan(nb2_eta[evt_id]):
-                ax.axvline(
-                    nb2_eta[evt_id],
-                    color="darkorange",
-                    lw=1.6,
-                    linestyle=":",
-                    label=rf"Root 2 $= {nb2_eta[evt_id]:.2f}$",
-                    zorder=3,
-                )
+            # ----------------------------------------------------
+            # 4. Mark Analytical Solution 1 (NB1)
+            # ----------------------------------------------------
+            if nb1_nu_eta is not None:
+                val_nb1 = nb1_nu_eta[idx]
+                if not (np.isnan(val_nb1) or np.isinf(val_nb1)):
+                    ax.axvline(
+                        val_nb1,
+                        color="darkorange",
+                        linestyle="-.",
+                        lw=1.4,
+                        label=rf"NB1 ({val_nb1:.2f})",
+                        zorder=2,
+                    )
+                else:
+                    ax.plot([], [], " ", label="NB1: Complex (NaN)")
 
-            ax.set_title(f"Event #{evt_id}", fontsize=12, fontweight="bold")
-            ax.set_xlabel(r"Reconstructed $\eta_\nu$", fontsize=11)
-            if ax_idx == 0:
-                ax.set_ylabel(
-                    r"Posterior Density $p(\eta_\nu \mid \mathbf{x})$",
-                    fontsize=11,
-                )
-            ax.set_xlim(range_eta)
-            ax.legend(fontsize=8, loc="upper right", framealpha=0.85)
+            # ----------------------------------------------------
+            # 5. Mark Analytical Solution 2 (NB2)
+            # ----------------------------------------------------
+            if nb2_nu_eta is not None:
+                val_nb2 = nb2_nu_eta[idx]
+                if not (np.isnan(val_nb2) or np.isinf(val_nb2)):
+                    ax.axvline(
+                        val_nb2,
+                        color="purple",
+                        linestyle="-.",
+                        lw=1.4,
+                        label=rf"NB2 ({val_nb2:.2f})",
+                        zorder=2,
+                    )
+                else:
+                    ax.plot([], [], " ", label="NB2: Complex (NaN)")
+
+            ax.set_title(f"Event #{idx}", fontsize=11)
+            ax.set_xlabel(r"$\eta_\nu$", fontsize=10)
+            ax.set_ylabel("Probability Density", fontsize=10)
+            ax.set_xlim(grid_range)
+            ax.legend(fontsize=7.5, loc="upper right", framealpha=0.9)
+
+    # Hide unused subplot panels
+    for j in range(num_events, len(axes)):
+        axes[j].axis("off")
 
     plt.suptitle(
-        r"Event-Level Posterior Distributions $p(\eta_\nu \mid \mathbf{x})$ [Conditional Diffusion Model]",
+        r"Posterior Density $p(\eta_\nu \mid \mathbf{x})$: Diffusion Model vs. Analytical Roots",
         fontsize=14,
-        y=0.98,
+        y=1,
     )
     plt.tight_layout()
-
-    if output_filename:
-        plt.savefig(output_filename, dpi=300, bbox_inches="tight")
-        print(f"Saved posterior plots to {output_filename}")
-
     plt.show()
 
 
@@ -775,7 +774,7 @@ if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameters = load_hyperparameters(
@@ -826,29 +825,29 @@ if __name__ == "__main__":
     # ------------------------------------
     # correlation test
 
-    correlation_test_diffusion(
-        diffusion_model=diffusion_model,
-        dataset=dataset,
-        model_name=model_name,
-        nb1_eta=nb1_eta,
-        nb2_eta=nb2_eta,
-        met=met,
-        scaler_target=scaler_target,
-        num_samples=10,
-        batch_size=512,
-    )
+    # correlation_test_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     dataset=dataset,
+    #     model_name=model_name,
+    #     nb1_eta=nb1_eta,
+    #     nb2_eta=nb2_eta,
+    #     met=met,
+    #     scaler_target=scaler_target,
+    #     num_samples=10,
+    #     batch_size=512,
+    # )
 
     # ------------------------------------
     # Plot event posterior
 
-    # plot_diffusion_posteriors(
-    #     diffusion_model=diffusion_model,
-    #     features_test_scaled=features_test_scaled,
-    #     target_test=target_test,
-    #     model_name=model_name,
-    #     scaler_target=scaler_target,  # Joblib-loaded scaler
-    #     nb1_eta=nb1_eta,
-    #     nb2_eta=nb2_eta,
-    #     num_events=4,  # Plots 4 diverse events
-    #     num_samples=1000,  # 1000 draws gives a smooth, high-fidelity curve
-    # )
+    plot_event_posteriors_diffusion(
+        diffusion_model=diffusion_model,
+        dataset=dataset,
+        model_name=model_name,
+        scaler_target=scaler_target,  # Joblib-loaded scaler
+        nb1_nu_eta=nb1_eta,  # Analytical roots
+        nb2_nu_eta=nb2_eta,
+        num_random_events=6,  # Plots 6 events (2x3 grid)
+        num_samples_per_event=5000,  # 500 draws per event (finishes in ~10 seconds)
+        grid_range=(-5.0, 5.0),
+    )
