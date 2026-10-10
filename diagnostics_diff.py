@@ -101,6 +101,7 @@ def correlation_test_diffusion(
     det_preds = np.concatenate(all_deterministic_preds, axis=0).flatten()
     stoch_samples = np.concatenate(all_stochastic_samples, axis=0)  # [N, S]
 
+
     # Unscale predictions if a target scaler was used during training
     if scaler_target is not None:
         det_preds = scaler_target.inverse_transform(
@@ -118,6 +119,9 @@ def correlation_test_diffusion(
             targets = scaler_target.inverse_transform(
                 targets.reshape(-1, 1)
             ).flatten()
+
+    ratio = np.std(stoch_samples) / np.std(targets)
+    print(f"Variance ratio (sigma_pred / sigma_true): {ratio:.3f}")
 
     # Flatten stochastic posterior samples for Panel (a)
     targets_repeated = np.repeat(targets, num_samples)
@@ -252,7 +256,6 @@ def correlation_test_diffusion(
         ax.set_xlabel(r"True $\eta_\nu$", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(rf"{title} ($r = {r_val:.3f}$)", fontsize=12)
-        ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left", fontsize=8.5)
 
     # Row 1: Diffusion Progression
@@ -520,7 +523,6 @@ def invariant_mass_reconstruction_diffusion(
         r"$W$ Boson Invariant Mass Reconstruction [Diffusion Model]",
         fontsize=13,
     )
-    axes[0].grid(True, alpha=0.3)
     axes[0].legend(fontsize=9, loc="upper right")
 
     # --- Plot mWH ---
@@ -549,7 +551,6 @@ def invariant_mass_reconstruction_diffusion(
         r"Total $WH$ Invariant Mass Reconstruction [Diffusion Model]",
         fontsize=13,
     )
-    axes[1].grid(True, alpha=0.3)
     axes[1].legend(fontsize=9, loc="upper right")
 
     plt.tight_layout()
@@ -585,11 +586,196 @@ def invariant_mass_reconstruction_diffusion(
     }
 
 
+def plot_diffusion_posteriors(
+    diffusion_model,
+    features_test_scaled,
+    target_test,
+    model_name,
+    scaler_target=None,
+    nb1_eta=None,
+    nb2_eta=None,
+    event_indices=None,
+    num_events=4,
+    num_samples=1000,
+    range_eta=(-4.5, 4.5),
+    bins=50,
+    device=None,
+    output_filename=None,
+):
+    """Generates event-by-event posterior distribution plots p(eta_nu | x)
+
+    for representative test events, overlaying true eta and analytical roots.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
+    diffusion_model.eval()
+
+    target_flat = target_test.flatten()
+
+    # -------------------------------------------------------------------------
+    # 1. Automatic Event Selection (if event_indices not provided)
+    # Picks diverse events: separated roots, close roots, central, and forward
+    # -------------------------------------------------------------------------
+    if event_indices is None:
+        if nb1_eta is not None and nb2_eta is not None:
+            valid_mask = (
+                ~np.isnan(nb1_eta)
+                & ~np.isnan(nb2_eta)
+                & ~np.isinf(nb1_eta)
+                & ~np.isinf(nb2_eta)
+            )
+            valid_idx = np.where(valid_mask)[0]
+            root_diff = np.abs(nb1_eta[valid_idx] - nb2_eta[valid_idx])
+
+            # Pick 1 widely separated root, 1 close root, 1 positive, 1 negative
+            i_bimodal = valid_idx[np.argsort(-root_diff)[len(valid_idx) // 10]]
+            i_unimodal = valid_idx[np.argsort(root_diff)[len(valid_idx) // 10]]
+            i_forward = valid_idx[
+                np.argsort(-target_flat[valid_idx])[len(valid_idx) // 20]
+            ]
+            i_backward = valid_idx[
+                np.argsort(target_flat[valid_idx])[len(valid_idx) // 20]
+            ]
+
+            event_indices = [i_bimodal, i_unimodal, i_forward, i_backward][:num_events]
+        else:
+            event_indices = [10, 42, 105, 250][:num_events]
+
+    n_plots = len(event_indices)
+    fig, axes = plt.subplots(1, n_plots, figsize=(4.8 * n_plots, 4.5), sharey=False)
+    if n_plots == 1:
+        axes = [axes]
+
+    print(
+        f"Drawing {num_samples} posterior samples for {n_plots} events on {device}..."
+    )
+
+    with torch.no_grad():
+        for ax_idx, evt_id in enumerate(event_indices):
+            # Extract single event context and replicate for num_samples
+            ctx_single = features_test_scaled[evt_id : evt_id + 1]
+            ctx_tensor = torch.tensor(ctx_single, dtype=torch.float32).to(device)
+            ctx_replicated = ctx_tensor.repeat(num_samples, 1)
+
+            # 1. Stochastic Posterior Sampling (Langevin draws, eta=1.0 or standard DDPM)
+            if hasattr(diffusion_model, "sample_ddim"):
+                samples = diffusion_model.sample_ddim(ctx_replicated, eta=1.0)
+            else:
+                samples = diffusion_model.sample(ctx_replicated)
+
+            samples_np = samples.cpu().numpy().flatten()
+
+            # 2. Deterministic Point Prediction (DDIM eta=0.0)
+            if hasattr(diffusion_model, "sample_ddim"):
+                det_pred = diffusion_model.sample_ddim(ctx_tensor, eta=0.0)
+                det_np = det_pred.cpu().numpy().flatten()
+            else:
+                det_np = None
+
+            # Unscale back to physical pseudorapidity
+            if scaler_target is not None:
+                samples_np = scaler_target.inverse_transform(
+                    samples_np.reshape(-1, 1)
+                ).flatten()
+                if det_np is not None:
+                    det_np = scaler_target.inverse_transform(
+                        det_np.reshape(-1, 1)
+                    ).flatten()
+
+            # Physical Truth
+            t_true = target_flat[evt_id]
+
+            # -----------------------------------------------------------------
+            # Plotting the Posterior Density
+            # -----------------------------------------------------------------
+            ax = axes[ax_idx]
+
+            # Diffusion Posterior Histogram
+            ax.hist(
+                samples_np,
+                bins=bins,
+                range=range_eta,
+                density=True,
+                alpha=0.55,
+                color="royalblue",
+                edgecolor="navy",
+                lw=0.5,
+                label=rf"Diffusion $p(\eta_\nu|\mathbf{{x}})$",
+            )
+
+            # True Neutrino Coordinate
+            ax.axvline(
+                t_true,
+                color="black",
+                lw=2.2,
+                linestyle="-",
+                label=rf"True $\eta_\nu = {t_true:.2f}$",
+                zorder=5,
+            )
+
+            # Deterministic DDIM Prediction (eta = 0)
+            if det_np is not None:
+                ax.axvline(
+                    det_np[0],
+                    color="purple",
+                    lw=1.8,
+                    linestyle="-.",
+                    label=rf"DDIM ($\eta=0$) $= {det_np[0]:.2f}$",
+                    zorder=4,
+                )
+
+            # Analytical Quadratic Roots (NB1 and NB2)
+            if nb1_eta is not None and not np.isnan(nb1_eta[evt_id]):
+                ax.axvline(
+                    nb1_eta[evt_id],
+                    color="crimson",
+                    lw=1.6,
+                    linestyle="--",
+                    label=rf"Root 1 $= {nb1_eta[evt_id]:.2f}$",
+                    zorder=3,
+                )
+
+            if nb2_eta is not None and not np.isnan(nb2_eta[evt_id]):
+                ax.axvline(
+                    nb2_eta[evt_id],
+                    color="darkorange",
+                    lw=1.6,
+                    linestyle=":",
+                    label=rf"Root 2 $= {nb2_eta[evt_id]:.2f}$",
+                    zorder=3,
+                )
+
+            ax.set_title(f"Event #{evt_id}", fontsize=12, fontweight="bold")
+            ax.set_xlabel(r"Reconstructed $\eta_\nu$", fontsize=11)
+            if ax_idx == 0:
+                ax.set_ylabel(
+                    r"Posterior Density $p(\eta_\nu \mid \mathbf{x})$",
+                    fontsize=11,
+                )
+            ax.set_xlim(range_eta)
+            ax.legend(fontsize=8, loc="upper right", framealpha=0.85)
+
+    plt.suptitle(
+        r"Event-Level Posterior Distributions $p(\eta_\nu \mid \mathbf{x})$ [Conditional Diffusion Model]",
+        fontsize=14,
+        y=0.98,
+    )
+    plt.tight_layout()
+
+    if output_filename:
+        plt.savefig(output_filename, dpi=300, bbox_inches="tight")
+        print(f"Saved posterior plots to {output_filename}")
+
+    plt.show()
+
+
 if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameters = load_hyperparameters(
@@ -651,3 +837,18 @@ if __name__ == "__main__":
         num_samples=10,
         batch_size=512,
     )
+
+    # ------------------------------------
+    # Plot event posterior
+
+    # plot_diffusion_posteriors(
+    #     diffusion_model=diffusion_model,
+    #     features_test_scaled=features_test_scaled,
+    #     target_test=target_test,
+    #     model_name=model_name,
+    #     scaler_target=scaler_target,  # Joblib-loaded scaler
+    #     nb1_eta=nb1_eta,
+    #     nb2_eta=nb2_eta,
+    #     num_events=4,  # Plots 4 diverse events
+    #     num_samples=1000,  # 1000 draws gives a smooth, high-fidelity curve
+    # )
