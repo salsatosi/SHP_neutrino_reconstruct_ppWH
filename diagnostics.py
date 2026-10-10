@@ -1011,6 +1011,9 @@ def correlation_test(
     slope_near, intercept_near = np.polyfit(targets, nearest_mode, 1)
     rms_nearest = np.sqrt(np.mean((nearest_mode - targets) ** 2))
 
+    ratio = np.std(samples_flat) / np.std(targets)
+    print(f"Variance ratio (sigma_pred / sigma_true): {ratio:.3f}")
+
     # =========================================================================
     # PART 2: Analytical Quadratic Solutions (NB1 & NB2)
     # =========================================================================
