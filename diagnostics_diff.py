@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Subset
 import numpy as np
 import matplotlib.pyplot as plt
 import joblib
@@ -20,6 +20,128 @@ from train_diffusion import (
 from scipy.stats import gaussian_kde
 
 
+def interval_coverage_diffusion(
+    diffusion_model,
+    dataset,
+    levels,
+    model_name,
+    scaler_target=None,  # Joblib-loaded scaler
+    num_samples_per_event=100,  # K draws to build empirical quantiles
+    max_events=5000,  # 5,000 events finishes in ~6 mins with SE ~ 0.6%
+    batch_size=50,  # 50 events * 100 samples = 5000 elements per forward pass
+    device=None,
+    seed=42,
+):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
+    diffusion_model.eval()
+
+    # 1. Subsample dataset if max_events is specified
+    total_available = len(dataset)
+    if max_events is not None and max_events < total_available:
+        rng = np.random.default_rng(seed)
+        sub_indices = rng.choice(total_available, size=max_events, replace=False)
+        eval_dataset = Subset(dataset, sub_indices)
+        total_eval_events = max_events
+    else:
+        eval_dataset = dataset
+        total_eval_events = total_available
+
+    loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
+
+    covered_counts = {level: 0 for level in levels}
+    total_events = 0
+
+    print(
+        f"\nRunning Diffusion Coverage Test on {total_eval_events:,} events ({num_samples_per_event} samples/event)..."
+    )
+
+    with torch.no_grad():
+        for batch_idx, (features, targets) in enumerate(loader):
+            features = features.to(device)
+            B = targets.shape[0]
+
+            # True targets in physical coordinates
+            t_phys = targets.squeeze(-1).numpy()
+            if (
+                scaler_target is not None
+                and np.std(t_phys) < 1.2
+                and scaler_target.scale_[0] > 1.2
+            ):
+                t_phys = scaler_target.inverse_transform(
+                    t_phys.reshape(-1, 1)
+                ).flatten()
+
+            # Repeat context K times for each event in the batch
+            feat_rep = features.repeat_interleave(num_samples_per_event, dim=0)
+
+            # Draw K posterior samples
+            # (Uses sample() for full posterior coverage; or sample_ddim(feat_rep, eta=1.0))
+            if hasattr(diffusion_model, "sample_ddim"):
+                raw_samples = diffusion_model.sample_ddim(feat_rep, eta=1.0)
+            else:
+                raw_samples = diffusion_model.sample(feat_rep)
+
+            raw_samples = raw_samples.cpu().numpy()
+
+            # Unscale samples to physical coordinates
+            if scaler_target is not None:
+                samples_phys = scaler_target.inverse_transform(
+                    raw_samples
+                ).flatten()
+            else:
+                samples_phys = raw_samples.flatten()
+
+            # Reshape into matrix: [B events, K posterior draws]
+            samples_matrix = samples_phys.reshape(B, num_samples_per_event)
+
+            # ----------------------------------------------------
+            # 2. Check Empirical Quantile Coverage for Each Level
+            # ----------------------------------------------------
+            for level in levels:
+                alpha = (1.0 - level) / 2.0
+                pct_lower = alpha * 100.0
+                pct_upper = (1.0 - alpha) * 100.0
+
+                # Compute empirical lower and upper bounds for each event
+                q_lower = np.percentile(samples_matrix, pct_lower, axis=1)
+                q_upper = np.percentile(samples_matrix, pct_upper, axis=1)
+
+                inside = (t_phys >= q_lower) & (t_phys <= q_upper)
+                covered_counts[level] += np.sum(inside)
+
+            total_events += B
+
+            if (batch_idx + 1) % 20 == 0 or (batch_idx + 1) == len(loader):
+                print(
+                    f"  Processed {total_events:,}/{total_eval_events:,} events..."
+                )
+
+    # ----------------------------------------------------
+    # 3. Print Results Summary Table
+    # ----------------------------------------------------
+    print("\nCalibration / Coverage Test (Diffusion Model)")
+    print("-" * 58)
+
+    results = {}
+    for level in levels:
+        observed = covered_counts[level] / total_events
+        difference = observed - level
+        results[level] = observed
+
+        # Exact binomial standard error
+        standard_error = np.sqrt(level * (1.0 - level) / total_events)
+
+        print(
+            f"Nominal {level*100:5.1f}% | "
+            f"Observed {observed*100:6.3f}% | "
+            f"Difference {difference*100:+6.3f}% | "
+            f"SE {standard_error*100:.3f}%"
+        )
+
+    return results
 
 def correlation_test_diffusion(
     diffusion_model,
@@ -774,7 +896,7 @@ if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameters = load_hyperparameters(
@@ -806,6 +928,21 @@ if __name__ == "__main__":
     nb1_eta = df["NB1_nu_eta"].values
     nb2_eta = df["NB2_nu_eta"].values
     met = df["MET"].values
+
+    # ------------------------------------
+    # coverage test
+    levels = [0.50, 0.68, 0.90, 0.95]
+
+    interval_coverage_diffusion(
+        diffusion_model=diffusion_model,
+        dataset=dataset,
+        levels=levels,
+        model_name=model_name,
+        scaler_target=scaler_target,  # Joblib-loaded scaler
+        num_samples_per_event=2000,  # 100 draws builds clean empirical percentiles
+        max_events=5000,  # 5,000 events takes ~6 mins
+        batch_size=50,
+    )
 
     # ------------------------------------
     # invariant mass reconstruction
@@ -840,14 +977,14 @@ if __name__ == "__main__":
     # ------------------------------------
     # Plot event posterior
 
-    plot_event_posteriors_diffusion(
-        diffusion_model=diffusion_model,
-        dataset=dataset,
-        model_name=model_name,
-        scaler_target=scaler_target,  # Joblib-loaded scaler
-        nb1_nu_eta=nb1_eta,  # Analytical roots
-        nb2_nu_eta=nb2_eta,
-        num_random_events=6,  # Plots 6 events (2x3 grid)
-        num_samples_per_event=5000,  # 500 draws per event (finishes in ~10 seconds)
-        grid_range=(-5.0, 5.0),
-    )
+    # plot_event_posteriors_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     dataset=dataset,
+    #     model_name=model_name,
+    #     scaler_target=scaler_target,  # Joblib-loaded scaler
+    #     nb1_nu_eta=nb1_eta,  # Analytical roots
+    #     nb2_nu_eta=nb2_eta,
+    #     num_random_events=6,  # Plots 6 events (2x3 grid)
+    #     num_samples_per_event=5000,  # 500 draws per event (finishes in ~10 seconds)
+    #     grid_range=(-5.0, 5.0),
+    # )
