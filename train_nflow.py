@@ -74,7 +74,7 @@ def load_hyperparameters(filename=None):
 
 
 def save_hyperparameters(hyperparameters, filename="hyperparameters"):
-    output_filename = f"models/{filename}_{time_str}.json"
+    output_filename = f"models/{filename}_nflow_{time_str}.json"
     with open(output_filename, "w") as f:
         json.dump(hyperparameters, f, indent=4)
     return output_filename
@@ -296,12 +296,12 @@ def train_model(flow,train_dataset,val_dataset,hyperparameters):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(flow.state_dict(), f"models/model_{time_str}.pt")
+            torch.save(flow.state_dict(), f"models/model_nflow_{time_str}.pt")
             print(f"  --> Saved new best model with Val NLL: {best_val_loss:.4f}")
 
 
 def test_model(flow,test_dataset,hyperparameters):
-    flow.load_state_dict(torch.load(f"models/model_{time_str}.pt"))
+    flow.load_state_dict(torch.load(f"models/model_nflow_{time_str}.pt"))
     flow.eval()
     test_loader = DataLoader(
         test_dataset,

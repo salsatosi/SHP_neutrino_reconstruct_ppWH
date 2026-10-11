@@ -1624,11 +1624,11 @@ def angle_comparison(
 if __name__ == "__main__":
     time = '20261004-093834'
     data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
-    hyperparameter_file = f"models/hyperparameters_{time}.json"
+    hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
 
-    model_name = f"models/model_{time}.pt"
+    model_name = f"models/model_nflow_{time}.pt"
     n_features = len(FEATURES)
     n_target = len(TARGET)
     # features, target = read_file(data_filename, FEATURES, TARGET)
