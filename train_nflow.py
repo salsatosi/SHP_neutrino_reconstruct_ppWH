@@ -322,7 +322,7 @@ def test_model(flow,test_dataset,hyperparameters):
 
 
 if __name__ == "__main__":
-    hyperparameter_file = "config.json"
+    hyperparameter_file = "config_nflow.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     torch.manual_seed(hyperparameters["random_seed"])
     save_hyperparameters(hyperparameters)
