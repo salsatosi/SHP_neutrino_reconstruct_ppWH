@@ -1,4 +1,4 @@
-from train import (
+from train_nflow import (
     device, FEATURES, TARGET, read_file, normalizing_flow, load_hyperparameters)
 import torch
 from torch.utils.data import TensorDataset, DataLoader

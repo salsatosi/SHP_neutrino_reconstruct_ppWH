@@ -1,5 +1,5 @@
 from scipy.optimize import curve_fit
-from train import (
+from train_nflow import (
     device, FEATURES, TARGET, read_file, normalizing_flow, load_hyperparameters)
 import torch
 from torch.utils.data import TensorDataset, DataLoader
@@ -425,7 +425,7 @@ def reconstruct_flow_polarization(
 
 if __name__ == "__main__":
     time = '20261004-093834'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
