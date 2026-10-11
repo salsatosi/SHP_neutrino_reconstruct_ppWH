@@ -265,8 +265,7 @@ class ConditionalDDPM(nn.Module):
         return loss
 
     @torch.no_grad()
-    def sample(self, context, eta=0.0):
-        """Deterministic DDIM sampling (eta=0.0 removes all Langevin blurring)."""
+    def sample_ddpm(self, context, eta=1.0):
         batch_size = context.shape[0]
         y_t = torch.randn((batch_size, 1), device=context.device)
 
@@ -280,9 +279,7 @@ class ConditionalDDPM(nn.Module):
             alpha_bar_prev = self.alphas_cumprod_prev[step]
 
             # 1. Estimate clean y0
-            pred_y0 = (
-                              y_t - torch.sqrt(1.0 - alpha_bar_t) * predicted_noise
-                      ) / torch.sqrt(alpha_bar_t)
+            pred_y0 = (y_t - torch.sqrt(1.0 - alpha_bar_t) * predicted_noise) / torch.sqrt(alpha_bar_t)
 
             # 2. DDIM step (deterministic when eta = 0.0)
             sigma = eta * torch.sqrt(
@@ -294,6 +291,53 @@ class ConditionalDDPM(nn.Module):
 
             y_t = torch.sqrt(alpha_bar_prev) * pred_y0 + direction_pointing_to_yt
             if eta > 0.0 and step > 0:
+                y_t += sigma * torch.randn_like(y_t)
+
+        return y_t
+
+    @torch.no_grad()
+    def sample_ddim(self, context, eta=0.0, sampling_steps=50):
+        batch_size = context.shape[0]
+        y_t = torch.randn((batch_size, 1), device=context.device)
+
+        timesteps = (
+            torch.linspace(0, self.T - 1, steps=sampling_steps).long().to(context.device)
+        )
+
+        for i in reversed(range(len(timesteps))):
+            step = timesteps[i]
+            prev_step = timesteps[i - 1] if i > 0 else None
+
+            t = torch.full(
+                (batch_size,), step, device=context.device, dtype=torch.long
+            )
+            predicted_noise = self.model(y_t, t, context)
+
+            alpha_bar_t = self.alphas_cumprod[step]
+
+            alpha_bar_prev = (
+                self.alphas_cumprod[prev_step]
+                if prev_step is not None
+                else torch.tensor(1.0, device=context.device)
+            )
+
+            pred_y0 = (
+                              y_t - torch.sqrt(1.0 - alpha_bar_t) * predicted_noise
+                      ) / torch.sqrt(alpha_bar_t)
+            pred_y0 = torch.clamp(pred_y0, -4.0, 4.0)
+
+            sigma = eta * torch.sqrt(
+                (1.0 - alpha_bar_prev)
+                / (1.0 - alpha_bar_t)
+                * (1.0 - alpha_bar_t / alpha_bar_prev)
+            )
+            direction = (
+                    torch.sqrt(torch.clamp(1.0 - alpha_bar_prev - sigma ** 2, min=1e-8))
+                    * predicted_noise
+            )
+
+            y_t = torch.sqrt(alpha_bar_prev) * pred_y0 + direction
+            if eta > 0.0 and prev_step is not None:
                 y_t += sigma * torch.randn_like(y_t)
 
         return y_t

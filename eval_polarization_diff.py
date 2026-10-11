@@ -218,12 +218,12 @@ def reconstruct_diffusion_polarization(
 
             if num_samples == 1:
                 # Direct sampling [batch_size, 1]
-                s = diffusion_model.sample(bx)
+                s = diffusion_model.sample_ddpm(bx)
                 diff_samples.append(s.squeeze(-1).cpu().numpy())
             else:
                 # Repeat each event context num_samples times
                 bx_rep = bx.repeat_interleave(num_samples, dim=0)
-                s = diffusion_model.sample(bx_rep)  # [B * S, 1]
+                s = diffusion_model.sample_ddpm(bx_rep)  # [B * S, 1]
                 s = s.view(bx.shape[0], num_samples)  # [B, S]
                 diff_samples.append(s.cpu().numpy())
 
@@ -461,7 +461,7 @@ def reconstruct_diffusion_polarization(
 if __name__ == "__main__":
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameter_file = f"models/hyperparameters_diff_{time}.json"

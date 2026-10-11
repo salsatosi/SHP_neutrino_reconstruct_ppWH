@@ -78,11 +78,7 @@ def interval_coverage_diffusion(
             feat_rep = features.repeat_interleave(num_samples_per_event, dim=0)
 
             # Draw K posterior samples
-            # (Uses sample() for full posterior coverage; or sample_ddim(feat_rep, eta=1.0))
-            if hasattr(diffusion_model, "sample_ddim"):
-                raw_samples = diffusion_model.sample_ddim(feat_rep, eta=1.0)
-            else:
-                raw_samples = diffusion_model.sample(feat_rep)
+            raw_samples = diffusion_model.sample_ddpm(feat_rep)
 
             raw_samples = raw_samples.cpu().numpy()
 
@@ -191,12 +187,8 @@ def correlation_test_diffusion(
             # 1. Deterministic DDIM Prediction (eta = 0.0) -> Replaces Flow MAP
             # -----------------------------------------------------------------
             # Starts from y_T and follows the ODE trajectory deterministically
-            if hasattr(diffusion_model, "sample_ddim"):
-                det_pred = diffusion_model.sample_ddim(features, eta=0.0)
-            else:
-                det_pred = diffusion_model.sample(
-                    features
-                )  # Fallback to standard sample
+
+            det_pred = diffusion_model.sample_ddim(features)
 
             det_np = det_pred.cpu().numpy()  # [B, 1]
             all_deterministic_preds.append(det_np)
@@ -207,10 +199,8 @@ def correlation_test_diffusion(
             # Repeat context to draw num_samples independent random trajectories
             feat_rep = features.repeat_interleave(num_samples, dim=0)
 
-            if hasattr(diffusion_model, "sample_ddim"):
-                stoch_pred = diffusion_model.sample_ddim(feat_rep, eta=1.0)
-            else:
-                stoch_pred = diffusion_model.sample(feat_rep)
+
+            stoch_pred = diffusion_model.sample_ddpm(feat_rep,eta=1.0)
 
             stoch_np = stoch_pred.view(B, num_samples).cpu().numpy()
             all_stochastic_samples.append(stoch_np)
@@ -390,7 +380,7 @@ def correlation_test_diffusion(
         intercept_samp,
         r_samples,
         "Purples",
-        "(a) Diffusion: Random Sampling",
+        "(a) Diffusion: DDPM ($\eta = 1$)",
         r"Sampled $\hat{\eta}_\nu$",
     )
     plot_panel(
@@ -401,7 +391,7 @@ def correlation_test_diffusion(
         intercept_det,
         r_det,
         "Blues",
-        r"(b) Diffusion: Deterministic DDIM ($\eta = 0$)",
+        r"(b) Diffusion: DDIM ($\eta = 0$)",
         r"Deterministic DDIM $\hat{\eta}_\nu$",
     )
     plot_panel(
@@ -577,11 +567,7 @@ def invariant_mass_reconstruction_diffusion(
         for batch_idx, (batch_x,) in enumerate(loader):
             batch_x = batch_x.to(device)
 
-            # Deterministic ODE trajectory
-            if hasattr(diffusion_model, "sample_ddim"):
-                pred = diffusion_model.sample_ddim(batch_x, eta=0.0)
-            else:
-                pred = diffusion_model.sample(batch_x)
+            pred = diffusion_model.sample_ddim(batch_x)
 
             diff_preds.append(pred.cpu().numpy())
 
@@ -770,7 +756,7 @@ def plot_event_posteriors_diffusion(
             )
 
             # Draw stochastic posterior samples (Langevin / DDPM dynamics)
-            raw_samples = diffusion_model.sample(bx).cpu().numpy()
+            raw_samples = diffusion_model.sample_ddpm(bx).cpu().numpy()
 
             # Unscale to physical pseudorapidity
             if scaler_target is not None:
@@ -896,7 +882,7 @@ if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameters = load_hyperparameters(
@@ -931,18 +917,18 @@ if __name__ == "__main__":
 
     # ------------------------------------
     # coverage test
-    levels = [0.50, 0.68, 0.90, 0.95]
-
-    interval_coverage_diffusion(
-        diffusion_model=diffusion_model,
-        dataset=dataset,
-        levels=levels,
-        model_name=model_name,
-        scaler_target=scaler_target,  # Joblib-loaded scaler
-        num_samples_per_event=2000,  # 100 draws builds clean empirical percentiles
-        max_events=5000,  # 5,000 events takes ~6 mins
-        batch_size=50,
-    )
+    # levels = [0.50, 0.68, 0.90, 0.95]
+    #
+    # interval_coverage_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     dataset=dataset,
+    #     levels=levels,
+    #     model_name=model_name,
+    #     scaler_target=scaler_target,  # Joblib-loaded scaler
+    #     num_samples_per_event=2000,  # 100 draws builds clean empirical percentiles
+    #     max_events=5000,  # 5,000 events takes ~6 mins
+    #     batch_size=50,
+    # )
 
     # ------------------------------------
     # invariant mass reconstruction
@@ -962,17 +948,17 @@ if __name__ == "__main__":
     # ------------------------------------
     # correlation test
 
-    # correlation_test_diffusion(
-    #     diffusion_model=diffusion_model,
-    #     dataset=dataset,
-    #     model_name=model_name,
-    #     nb1_eta=nb1_eta,
-    #     nb2_eta=nb2_eta,
-    #     met=met,
-    #     scaler_target=scaler_target,
-    #     num_samples=10,
-    #     batch_size=512,
-    # )
+    correlation_test_diffusion(
+        diffusion_model=diffusion_model,
+        dataset=dataset,
+        model_name=model_name,
+        nb1_eta=nb1_eta,
+        nb2_eta=nb2_eta,
+        met=met,
+        scaler_target=scaler_target,
+        num_samples=10,
+        batch_size=512,
+    )
 
     # ------------------------------------
     # Plot event posterior
