@@ -473,7 +473,7 @@ def compute_mode(data, bins=120, data_range=None):
 
 def invariant_mass_reconstruction_diffusion(
     diffusion_model,
-    features_test_scaled,
+    features_test,
     target_test,
     scaler_features,
     model_name,
@@ -489,7 +489,7 @@ def invariant_mass_reconstruction_diffusion(
     diffusion_model.eval()
 
     # 1. Unscale features to physical units (GeV, radians)
-    features_unscaled = scaler_features.inverse_transform(features_test_scaled)
+    features_unscaled = scaler_features.inverse_transform(features_test)
 
     # 2. Extract kinematics
     lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
@@ -558,7 +558,7 @@ def invariant_mass_reconstruction_diffusion(
         f"Reconstructing masses using Deterministic DDIM (eta=0.0) on {device}..."
     )
     diff_preds = []
-    features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
+    features_tensor = torch.tensor(features_test, dtype=torch.float32)
     loader = DataLoader(
         TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
     )
@@ -878,11 +878,311 @@ def plot_event_posteriors_diffusion(
     plt.show()
 
 
+def compare_eta_nu_distribution_diffusion(
+    diffusion_model,
+    features_test,
+    target_test,
+    scaler_features,
+    model_name,
+    scaler_target=None,  # Joblib-loaded target scaler for inverse transform
+    nb1_nu_eta=None,  # 1st quadratic solution
+    nb2_nu_eta=None,  # 2nd quadratic solution
+    num_samples=1,  # 1 sample/event gives full dataset statistics rapidly
+    sampling_steps=50,
+    batch_size=1024,
+    bins=60,
+    range_eta=(-5.0, 5.0),
+    seed=42,
+    device=None,
+):
+    """Directly compares reconstructed neutrino pseudorapidity (eta_nu)
+
+    distributions for the Diffusion Model:
+      - MC Truth vs. Diffusion Model vs. 50/50 vs. Min-|pz|
+      - Calculates chi2/ndf against MC Truth
+      - Plots 2-panel Normalized Density + Ratio-to-Truth (No grid lines)
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
+    diffusion_model.eval()
+
+    true_eta = target_test.flatten()
+
+    n_events = len(true_eta)
+
+    # 1. Unscale features to extract MET for min-|pz| baseline
+    met = features_test[:, FEATURES.index("MET")]
+
+    # ----------------------------------------------------
+    # 2. Sample from Diffusion Model
+    # ----------------------------------------------------
+    print(
+        f"Sampling eta_nu from Diffusion Model on {device} (num_samples={num_samples})..."
+    )
+    diff_samples = []
+    features_tensor = torch.tensor(features_test, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for batch_idx, (bx,) in enumerate(loader):
+            bx = bx.to(device)
+
+            if num_samples == 1:
+                # Fast deterministic single-sample inference via DDIM (eta=0.0)
+                # sampling_steps=50 gives a 10x speedup with near-identical physics
+                s = diffusion_model.sample_ddim(bx, eta=0.0, sampling_steps=sampling_steps)
+                diff_samples.append(s.cpu().numpy())
+            else:
+                # Multiple stochastic posterior draws per event via DDPM (eta=1.0)
+                bx_rep = bx.repeat_interleave(num_samples, dim=0)
+                s = diffusion_model.sample_ddpm(bx_rep, eta=1.0)
+                diff_samples.append(s.cpu().numpy())
+                diff_samples.append(s.cpu().numpy())
+
+            if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == len(loader):
+                print(f"  Processed {batch_idx + 1}/{len(loader)} batches...")
+
+    eta_diff_raw = np.concatenate(diff_samples, axis=0)
+    orig_shape = eta_diff_raw.shape
+    eta_diff = scaler_target.inverse_transform(
+        eta_diff_raw.reshape(-1, 1)
+    ).reshape(orig_shape)
+
+    # ----------------------------------------------------
+    # 4. Construct Analytical Baselines (50/50 & min-|pz|)
+    # ----------------------------------------------------
+    eta_5050 = None
+    eta_minpz = None
+
+    if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Baseline 1: Random 50/50 Choice
+        rng = np.random.default_rng(seed=seed)
+        coin_flip = rng.choice([True, False], size=n_events)
+        eta_5050_raw = np.where(coin_flip, nb1_nu_eta, nb2_nu_eta)
+        valid_5050 = ~(np.isnan(eta_5050_raw) | np.isinf(eta_5050_raw))
+        eta_5050 = eta_5050_raw[valid_5050]
+
+        # Baseline 2: Minimum |pz|
+        pz1 = np.abs(met * np.sinh(nb1_nu_eta))
+        pz2 = np.abs(met * np.sinh(nb2_nu_eta))
+        eta_minpz_raw = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+        valid_minpz = ~(np.isnan(eta_minpz_raw) | np.isinf(eta_minpz_raw))
+        eta_minpz = eta_minpz_raw[valid_minpz]
+
+    # ----------------------------------------------------
+    # 5. Two-Sample Poisson Chi-Squared Calculation
+    # ----------------------------------------------------
+    def compute_chi2_ndf(counts_test, counts_ref):
+        n_ref = np.sum(counts_ref)
+        n_test = np.sum(counts_test)
+        scale = n_ref / n_test
+
+        scaled_test = counts_test * scale
+        variance = counts_ref + (scale**2) * counts_test
+
+        valid = (counts_ref > 5) & (variance > 0)
+        chi2 = np.sum(
+            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
+        )
+        ndf = np.sum(valid) - 1
+        chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
+        return chi2, ndf, chi2_ndf
+
+    # Compute raw histograms for Chi2 and errors
+    raw_truth, edges = np.histogram(true_eta, bins=bins, range=range_eta)
+    raw_diff, _ = np.histogram(eta_diff, bins=bins, range=range_eta)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    _, _, r_chi2_diff = compute_chi2_ndf(raw_diff, raw_truth)
+
+    r_chi2_5050 = None
+    r_chi2_minpz = None
+
+    if eta_5050 is not None:
+        raw_5050, _ = np.histogram(eta_5050, bins=bins, range=range_eta)
+        _, _, r_chi2_5050 = compute_chi2_ndf(raw_5050, raw_truth)
+
+    if eta_minpz is not None:
+        raw_minpz, _ = np.histogram(eta_minpz, bins=bins, range=range_eta)
+        _, _, r_chi2_minpz = compute_chi2_ndf(raw_minpz, raw_truth)
+
+    # Normalized Densities for plotting
+    norm_truth, _ = np.histogram(
+        true_eta, bins=bins, range=range_eta, density=True
+    )
+    norm_diff, _ = np.histogram(
+        eta_diff, bins=bins, range=range_eta, density=True
+    )
+
+    # ----------------------------------------------------
+    # 6. Print Summary Table
+    # ----------------------------------------------------
+    std_true = np.std(true_eta)
+    std_diff = np.std(eta_diff)
+
+    print("\n" + "=" * 75)
+    print(
+        f"{'Method':<24} | {'Mean':<8} | {'Std (Width)':<12} | {'chi2 / ndf':<12}"
+    )
+    print("=" * 75)
+    print(
+        f"{'1. MC Truth (Ref)':<24} | {np.mean(true_eta):<8.3f} | {std_true:<12.3f} | {'—':<12}"
+    )
+    print(
+        f"{'2. Diffusion Samples':<24} | {np.mean(eta_diff):<8.3f} | {std_diff:<12.3f} | {r_chi2_diff:<12.2f}"
+    )
+    if eta_5050 is not None:
+        print(
+            f"{'3. Baseline (50/50)':<24} | {np.mean(eta_5050):<8.3f} | {np.std(eta_5050):<12.3f} | {r_chi2_5050:<12.2f}"
+        )
+    if eta_minpz is not None:
+        print(
+            f"{'4. Baseline (min-|pz|)':<24} | {np.mean(eta_minpz):<8.3f} | {np.std(eta_minpz):<12.3f} | {r_chi2_minpz:<12.2f}"
+        )
+    print("=" * 75)
+
+    # ----------------------------------------------------
+    # 7. Plotting: Distribution & Ratio (NO GRID LINES)
+    # ----------------------------------------------------
+    fig, (ax_main, ax_ratio) = plt.subplots(
+        2,
+        1,
+        figsize=(9, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.5, 1.2]},
+    )
+
+    # --- Main Panel ---
+    ax_main.hist(
+        centers,
+        bins=edges,
+        weights=norm_truth,
+        histtype="step",
+        linewidth=2.2,
+        color="black",
+        label=rf"MC Truth",
+    )
+    ax_main.hist(
+        centers,
+        bins=edges,
+        weights=norm_diff,
+        histtype="stepfilled",
+        alpha=0.45,
+        color="royalblue",
+        label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_diff:.2f}$)",
+    )
+
+    if eta_5050 is not None:
+        norm_5050, _ = np.histogram(
+            eta_5050, bins=bins, range=range_eta, density=True
+        )
+        ax_main.hist(
+            centers,
+            bins=edges,
+            weights=norm_5050,
+            histtype="step",
+            linestyle="--",
+            linewidth=1.8,
+            color="crimson",
+            label=rf"Baseline (50/50) ($\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.2f}$)",
+        )
+
+    if eta_minpz is not None:
+        norm_minpz, _ = np.histogram(
+            eta_minpz, bins=bins, range=range_eta, density=True
+        )
+        ax_main.hist(
+            centers,
+            bins=edges,
+            weights=norm_minpz,
+            histtype="step",
+            linestyle=":",
+            linewidth=2.0,
+            color="darkorange",
+            label=rf"Baseline min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.2f}$)",
+        )
+
+    ax_main.set_ylabel(r"Normalized Density", fontsize=12)
+    ax_main.set_title(
+        r"Neutrino Pseudorapidity ($\eta_\nu$) Reconstruction [Diffusion Model]",
+        fontsize=13,
+    )
+    ax_main.legend(fontsize=9.0, loc="upper right")
+    # NO GRID ON ax_main
+
+    # --- Ratio Panel (Model / Truth) ---
+    ratio_diff = norm_diff / np.maximum(norm_truth, 1e-6)
+
+    # Poisson uncertainties on Diffusion ratio (clean, capless)
+    valid_bins = (raw_diff > 0) & (raw_truth > 0)
+    ratio_err_diff = np.zeros_like(ratio_diff)
+    ratio_err_diff[valid_bins] = ratio_diff[valid_bins] * np.sqrt(
+        1.0 / raw_diff[valid_bins] + 1.0 / raw_truth[valid_bins]
+    )
+
+    ax_ratio.errorbar(
+        centers[valid_bins],
+        ratio_diff[valid_bins],
+        yerr=ratio_err_diff[valid_bins],
+        fmt="o-",
+        color="royalblue",
+        ecolor="royalblue",
+        ms=3.0,
+        elinewidth=1.0,
+        capsize=0,
+        label="Diffusion / Truth",
+        zorder=3,
+    )
+
+    if eta_5050 is not None:
+        ratio_5050 = norm_5050 / np.maximum(norm_truth, 1e-6)
+        ax_ratio.plot(
+            centers,
+            ratio_5050,
+            "--",
+            color="crimson",
+            lw=1.5,
+            label="50/50 / Truth",
+            zorder=2,
+        )
+
+    if eta_minpz is not None:
+        ratio_minpz = norm_minpz / np.maximum(norm_truth, 1e-6)
+        ax_ratio.plot(
+            centers,
+            ratio_minpz,
+            ":",
+            color="darkorange",
+            lw=1.8,
+            label="min-$|p_z|$ / Truth",
+            zorder=2,
+        )
+
+    ax_ratio.axhline(1.0, color="black", linestyle="--", alpha=0.8)
+    ax_ratio.set_ylim(0.6, 1.4)
+    ax_ratio.set_xlabel(r"Neutrino Pseudorapidity $\eta_\nu$", fontsize=11)
+    ax_ratio.set_ylabel("Ratio to Truth", fontsize=10)
+    ax_ratio.legend(fontsize=8.0, loc="lower right", ncol=3)
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "r_chi2_diff": r_chi2_diff,
+        "r_chi2_5050": r_chi2_5050,
+        "r_chi2_minpz": r_chi2_minpz
+    }
+
+
 if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameters = load_hyperparameters(
@@ -895,11 +1195,11 @@ if __name__ == "__main__":
     scaler_features = joblib.load(f"scalers/scaler_features_diff_{time}.joblib")
     scaler_target = joblib.load(f"scalers/scaler_target_diff_{time}.joblib")
 
-    features_test_scaled = scaler_features.transform(features_test)
+    features_test = scaler_features.transform(features_test)
 
     # Build PyTorch Dataset
     dataset = TensorDataset(
-        torch.tensor(features_test_scaled, dtype=torch.float32),
+        torch.tensor(features_test, dtype=torch.float32),
         torch.tensor(target_test, dtype=torch.float32),
     )
 
@@ -935,7 +1235,7 @@ if __name__ == "__main__":
 
     # invariant_mass_reconstruction_diffusion(
     #     diffusion_model=diffusion_model,
-    #     features_test_scaled=features_test_scaled,
+    #     features_test=features_test,
     #     target_test=target_test,
     #     scaler_features=scaler_features,
     #     scaler_target=scaler_target,  # Joblib-loaded scaler
@@ -948,17 +1248,17 @@ if __name__ == "__main__":
     # ------------------------------------
     # correlation test
 
-    correlation_test_diffusion(
-        diffusion_model=diffusion_model,
-        dataset=dataset,
-        model_name=model_name,
-        nb1_eta=nb1_eta,
-        nb2_eta=nb2_eta,
-        met=met,
-        scaler_target=scaler_target,
-        num_samples=10,
-        batch_size=512,
-    )
+    # correlation_test_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     dataset=dataset,
+    #     model_name=model_name,
+    #     nb1_eta=nb1_eta,
+    #     nb2_eta=nb2_eta,
+    #     met=met,
+    #     scaler_target=scaler_target,
+    #     num_samples=10,
+    #     batch_size=512,
+    # )
 
     # ------------------------------------
     # Plot event posterior
@@ -974,3 +1274,21 @@ if __name__ == "__main__":
     #     num_samples_per_event=5000,  # 500 draws per event (finishes in ~10 seconds)
     #     grid_range=(-5.0, 5.0),
     # )
+
+    # ------------------------------------
+    # Eta comparison
+
+    compare_eta_nu_distribution_diffusion(
+        diffusion_model=diffusion_model,
+        features_test=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        scaler_target=scaler_target,  # Inverse transforms predictions automatically
+        model_name=model_name,
+        nb1_nu_eta=nb1_eta,
+        nb2_nu_eta=nb2_eta,
+        num_samples=1,  # Fast 1-sample evaluation across the dataset
+        batch_size=1024,
+        bins=60,
+        range_eta=(-5.0, 5.0),
+    )
