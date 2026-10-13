@@ -389,7 +389,7 @@ def pit_test(
 
     plt.xlabel("PIT value")
     plt.ylabel("Density")
-    plt.title("PIT Histogram")
+    plt.title("PIT Histogram [Normalising Flow]")
     # plt.legend()
     plt.show()
 
@@ -669,7 +669,7 @@ def plot_event_posteriors(
         axes[j].axis("off")
 
     plt.suptitle(
-        r"Posterior Density $p(\eta_\nu | x)$ vs. Analytical $W$ Solutions",
+        r"Posterior Density $p(\eta_\nu | x)$ vs. Analytical $W$ Solutions [Normalising Flow]",
         fontsize=14,
         y=1.01,
     )
@@ -838,7 +838,7 @@ def invariant_mass_reconstruction(
     )
     axes[0].set_xlabel(r"$m_W$ [GeV]", fontsize=11)
     axes[0].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
-    axes[0].set_title(r"$W$ Boson Invariant Mass Reconstruction", fontsize=12)
+    axes[0].set_title(r"$W$ Boson Invariant Mass Reconstruction [Normalising Flow]", fontsize=12)
     axes[0].legend(fontsize=9)
 
     # --- Plot mWH ---
@@ -863,7 +863,7 @@ def invariant_mass_reconstruction(
     )
     axes[1].set_xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
     axes[1].set_ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
-    axes[1].set_title(r"Total $WH$ Invariant Mass Reconstruction", fontsize=12)
+    axes[1].set_title(r"Total $WH$ Invariant Mass Reconstruction [Normalising Flow]", fontsize=12)
     axes[1].legend(fontsize=9)
 
     plt.tight_layout()
@@ -1202,7 +1202,7 @@ def correlation_test(
     )
 
     plt.suptitle(
-        r"Comparison of Neutrino $\eta_\nu$ Reconstruction: Normalizing Flow vs. Analytical Quadratic Solution",
+        r"Comparison of Neutrino $\eta_\nu$ Reconstruction: Normalizing Flow vs. Analytical Quadratic Solution [Normalising Flow]",
         fontsize=14,
         y=0.995,
     )
@@ -1606,7 +1606,7 @@ def angle_comparison(
     print("=" * 95)
 
     plt.suptitle(
-        "Polarization Observables & Chi-Squared Test vs. MC Truth",
+        "Polarization Observables & Chi-Squared Test vs. MC Truth [Normalising Flow]",
         fontsize=13,
         y=0.99,
     )
@@ -1619,6 +1619,284 @@ def angle_comparison(
         "obs_base": obs_base,
         "chi2_results": chi2_results,
     }
+
+
+def compare_eta_nu_distribution(
+    flow,
+    features_test_scaled,
+    target_test,
+    scaler_features,
+    model_name,
+    nb1_nu_eta=None,  # 1st quadratic solution
+    nb2_nu_eta=None,  # 2nd quadratic solution
+    num_samples=10,  # Posterior draws per event (1 to 10)
+    batch_size=512,
+    bins=60,
+    range_eta=(-5.0, 5.0),
+    seed=42,
+    device=None,
+):
+    """Directly compares reconstructed neutrino pseudorapidity (eta_nu)
+
+    distributions: - MC Truth vs. Normalizing Flow vs. 50/50 vs. Min-|pz| -
+    Calculates chi2/ndf against MC Truth - Plots 2-panel Normalized Density +
+    Ratio-to-Truth
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    flow.load_state_dict(torch.load(model_name, map_location=device))
+    flow.eval()
+
+    true_eta = target_test.flatten()
+    n_events = len(true_eta)
+
+    # 1. Unscale features to extract MET for min-|pz| calculation
+    features_unscaled = scaler_features.inverse_transform(features_test_scaled)
+    met = features_unscaled[:, FEATURES.index("MET")]
+
+    # ----------------------------------------------------
+    # 2. Sample from Normalizing Flow
+    # ----------------------------------------------------
+    print(
+        f"Sampling eta_nu from Normalizing Flow (num_samples={num_samples})..."
+    )
+    flow_samples = []
+    features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for (bx,) in loader:
+            bx = bx.to(device)
+            s = flow.sample(num_samples=num_samples, context=bx)
+            flow_samples.append(s.squeeze(-1).cpu().numpy())
+
+    eta_flow = np.concatenate(flow_samples, axis=0).flatten()
+
+    # ----------------------------------------------------
+    # 3. Construct Analytical Baselines (50/50 & min-|pz|)
+    # ----------------------------------------------------
+    eta_5050 = None
+    eta_minpz = None
+
+    if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Baseline 1: Random 50/50 Choice
+        rng = np.random.default_rng(seed=seed)
+        coin_flip = rng.choice([True, False], size=n_events)
+        eta_5050_raw = np.where(coin_flip, nb1_nu_eta, nb2_nu_eta)
+        valid_5050 = ~(np.isnan(eta_5050_raw) | np.isinf(eta_5050_raw))
+        eta_5050 = eta_5050_raw[valid_5050]
+
+        # Baseline 2: Minimum |pz|
+        pz1 = np.abs(met * np.sinh(nb1_nu_eta))
+        pz2 = np.abs(met * np.sinh(nb2_nu_eta))
+        eta_minpz_raw = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+        valid_minpz = ~(np.isnan(eta_minpz_raw) | np.isinf(eta_minpz_raw))
+        eta_minpz = eta_minpz_raw[valid_minpz]
+
+    # ----------------------------------------------------
+    # 4. Two-Sample Poisson Chi-Squared Function
+    # ----------------------------------------------------
+    def compute_chi2_ndf(counts_test, counts_ref):
+        n_ref = np.sum(counts_ref)
+        n_test = np.sum(counts_test)
+        scale = n_ref / n_test
+
+        scaled_test = counts_test * scale
+        variance = counts_ref + (scale**2) * counts_test
+
+        valid = (counts_ref > 5) & (variance > 0)
+        chi2 = np.sum(
+            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
+        )
+        ndf = np.sum(valid) - 1
+        chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
+        return chi2, ndf, chi2_ndf
+
+    # ----------------------------------------------------
+    # 5. Compute Histograms and Chi2
+    # ----------------------------------------------------
+    raw_truth, edges = np.histogram(true_eta, bins=bins, range=range_eta)
+    raw_flow, _ = np.histogram(eta_flow, bins=bins, range=range_eta)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    _, _, r_chi2_flow = compute_chi2_ndf(raw_flow, raw_truth)
+
+    r_chi2_5050 = None
+    r_chi2_minpz = None
+
+    if eta_5050 is not None:
+        raw_5050, _ = np.histogram(eta_5050, bins=bins, range=range_eta)
+        _, _, r_chi2_5050 = compute_chi2_ndf(raw_5050, raw_truth)
+
+    if eta_minpz is not None:
+        raw_minpz, _ = np.histogram(eta_minpz, bins=bins, range=range_eta)
+        _, _, r_chi2_minpz = compute_chi2_ndf(raw_minpz, raw_truth)
+
+    # Normalized Densities for plotting
+    norm_truth, _ = np.histogram(
+        true_eta, bins=bins, range=range_eta, density=True
+    )
+    norm_flow, _ = np.histogram(
+        eta_flow, bins=bins, range=range_eta, density=True
+    )
+
+    # ----------------------------------------------------
+    # 6. Print Summary Table
+    # ----------------------------------------------------
+    print("\n" + "=" * 75)
+    print(
+        f"{'Method':<24} | {'Mean':<8} | {'Std (Width)':<12} | {'chi2 / ndf':<12}"
+    )
+    print("=" * 75)
+    print(
+        f"{'1. MC Truth (Ref)':<24} | {np.mean(true_eta):<8.3f} | {np.std(true_eta):<12.3f} | {'—':<12}"
+    )
+    print(
+        f"{'2. Flow Samples':<24} | {np.mean(eta_flow):<8.3f} | {np.std(eta_flow):<12.3f} | {r_chi2_flow:<12.2f}"
+    )
+    if eta_5050 is not None:
+        print(
+            f"{'3. Baseline (50/50)':<24} | {np.mean(eta_5050):<8.3f} | {np.std(eta_5050):<12.3f} | {r_chi2_5050:<12.2f}"
+        )
+    if eta_minpz is not None:
+        print(
+            f"{'4. Baseline (min-|pz|)':<24} | {np.mean(eta_minpz):<8.3f} | {np.std(eta_minpz):<12.3f} | {r_chi2_minpz:<12.2f}"
+        )
+    print("=" * 75)
+
+    # ----------------------------------------------------
+    # 7. Plotting: Distribution & Ratio-to-Truth
+    # ----------------------------------------------------
+    fig, (ax_main, ax_ratio) = plt.subplots(
+        2,
+        1,
+        figsize=(9, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.5, 1.2]},
+    )
+
+    # --- Main Panel ---
+    ax_main.hist(
+        centers,
+        bins=edges,
+        weights=norm_truth,
+        histtype="step",
+        linewidth=2.2,
+        color="black",
+        label=rf"MC Truth",
+    )
+    ax_main.hist(
+        centers,
+        bins=edges,
+        weights=norm_flow,
+        histtype="stepfilled",
+        alpha=0.45,
+        color="royalblue",
+        label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_flow:.2f}$)",
+    )
+
+    if eta_5050 is not None:
+        norm_5050, _ = np.histogram(
+            eta_5050, bins=bins, range=range_eta, density=True
+        )
+        ax_main.hist(
+            centers,
+            bins=edges,
+            weights=norm_5050,
+            histtype="step",
+            linestyle="--",
+            linewidth=1.8,
+            color="crimson",
+            label=rf"Baseline (50/50) ($\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.2f}$)",
+        )
+
+    if eta_minpz is not None:
+        norm_minpz, _ = np.histogram(
+            eta_minpz, bins=bins, range=range_eta, density=True
+        )
+        ax_main.hist(
+            centers,
+            bins=edges,
+            weights=norm_minpz,
+            histtype="step",
+            linestyle=":",
+            linewidth=2.0,
+            color="darkorange",
+            label=rf"Baseline min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.2f}$)",
+        )
+
+    ax_main.set_ylabel(r"Normalized Density", fontsize=12)
+    ax_main.set_title(
+        r"Neutrino Pseudorapidity ($\eta_\nu$) Reconstruction [Normalising Flow]", fontsize=13
+    )
+    ax_main.legend(fontsize=9.0, loc="upper right")
+
+    # --- Ratio Panel (Model / Truth) ---
+    ratio_flow = norm_flow / np.maximum(norm_truth, 1e-6)
+
+    # Poisson uncertainties on Flow ratio (no ugly caps)
+    valid_bins = (raw_flow > 0) & (raw_truth > 0)
+    ratio_err_flow = np.zeros_like(ratio_flow)
+    ratio_err_flow[valid_bins] = ratio_flow[valid_bins] * np.sqrt(
+        1.0 / raw_flow[valid_bins] + 1.0 / raw_truth[valid_bins]
+    )
+
+    ax_ratio.errorbar(
+        centers[valid_bins],
+        ratio_flow[valid_bins],
+        yerr=ratio_err_flow[valid_bins],
+        fmt="o-",
+        color="royalblue",
+        ecolor="royalblue",
+        ms=3.0,
+        elinewidth=1.0,
+        capsize=0,
+        label="Flow / Truth",
+        zorder=3,
+    )
+
+    if eta_5050 is not None:
+        ratio_5050 = norm_5050 / np.maximum(norm_truth, 1e-6)
+        ax_ratio.plot(
+            centers,
+            ratio_5050,
+            "--",
+            color="crimson",
+            lw=1.5,
+            label="50/50 / Truth",
+            zorder=2,
+        )
+
+    if eta_minpz is not None:
+        ratio_minpz = norm_minpz / np.maximum(norm_truth, 1e-6)
+        ax_ratio.plot(
+            centers,
+            ratio_minpz,
+            ":",
+            color="darkorange",
+            lw=1.8,
+            label="min-$|p_z|$ / Truth",
+            zorder=2,
+        )
+
+    ax_ratio.axhline(1.0, color="black", linestyle="--", alpha=0.8)
+    ax_ratio.set_ylim(0.6, 1.4)
+    ax_ratio.set_xlabel(r"Neutrino Pseudorapidity $\eta_\nu$", fontsize=11)
+    ax_ratio.set_ylabel("Ratio to Truth", fontsize=10)
+    ax_ratio.legend(fontsize=8.0, loc="lower right", ncol=3)
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "r_chi2_flow": r_chi2_flow,
+        "r_chi2_5050": r_chi2_5050,
+        "r_chi2_minpz": r_chi2_minpz,
+    }
+
 
 
 if __name__ == "__main__":
@@ -1660,22 +1938,22 @@ if __name__ == "__main__":
     # ----------------------------
     # Coverage test
 
-    coverage = interval_coverage(
-        flow=flow,
-        dataset=test_dataset,
-        levels=(0.50,0.68,0.90,0.95),
-        model_name=model_name
-    )
+    # interval_coverage(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     levels=(0.50,0.68,0.90,0.95),
+    #     model_name=model_name
+    # )
 
     # ----------------------------
     # Shuffle test
 
-    normal_nll, shuffled_nll = shuffled_context_nll(
-        flow=flow,
-        dataset=test_dataset,
-        batch_size=512,
-        model_name=model_name
-    )
+    # shuffled_context_nll(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     batch_size=512,
+    #     model_name=model_name
+    # )
 
     # ----------------------------
     # Conditional Calibration
@@ -1691,115 +1969,136 @@ if __name__ == "__main__":
     # ----------------------------
     # PIT Value test
 
-    pit_values = pit_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        batch_size=512,
-        num_bins=20
-    )
+    # pit_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     batch_size=512,
+    #     num_bins=20
+    # )
 
     # ----------------------------
     # Point Reconstruction test
 
-    results = point_reconstruction_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        num_samples=2000,
-        estimator="mode"
-    )
-
-    residuals = results["residual"]
-
-    plt.figure(figsize=(8, 5))
-
-    plt.hist(
-        residuals,
-        bins=100,
-        density=True
-    )
-
-    plt.axvline(
-        0,
-        linestyle="--",
-        label="Zero residual"
-    )
-
-    plt.xlabel(
-        r"$\Delta \hat{\eta}_\nu^{mode}$"
-    )
-    plt.ylabel("Probability Density")
-    plt.title(r"$\eta_\nu$ Reconstruction Residual")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    # results = point_reconstruction_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     num_samples=2000,
+    #     estimator="mode"
+    # )
+    #
+    # residuals = results["residual"]
+    #
+    # plt.figure(figsize=(8, 5))
+    #
+    # plt.hist(
+    #     residuals,
+    #     bins=100,
+    #     density=True
+    # )
+    #
+    # plt.axvline(
+    #     0,
+    #     linestyle="--",
+    #     label="Zero residual"
+    # )
+    #
+    # plt.xlabel(
+    #     r"$\Delta \hat{\eta}_\nu^{mode}$"
+    # )
+    # plt.ylabel("Probability Density")
+    # plt.title(r"$\eta_\nu$ Reconstruction Residual")
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.show()
 
     # ----------------------------
     # Multimodality / Posterior Shape Visualization
 
-    df = pd.read_csv(data_filename,encoding_errors='ignore')
-    nb1_nu_eta = df['NB1_nu_eta'].values
-    nb2_nu_eta = df['NB2_nu_eta'].values
-
-    plot_event_posteriors(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nb1_nu_eta=nb1_nu_eta,
-        nb2_nu_eta=nb2_nu_eta,
-        num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
-        grid_range=(-5.0, 5.0),
-        num_grid_points=1000,
-    )
+    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # plot_event_posteriors(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     num_random_events=6,  # Or pass specific events e.g. event_indices=[12, 45, 99]
+    #     grid_range=(-5.0, 5.0),
+    #     num_grid_points=1000,
+    # )
 
 
     # ----------------------------
     # Invariant Mass Reconstruction Test
 
-    invariant_mass_reconstruction(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        num_samples=500,
-        batch_size=512,
-        num_bins=120
-    )
+    # invariant_mass_reconstruction(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     num_samples=500,
+    #     batch_size=512,
+    #     num_bins=120
+    # )
 
     # ----------------------------
     # Correlation Test
 
-    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
-
-    # Match test set indices
-    df_test_raw = df_raw.iloc[-len(target_test):]
-    true_eta_test = df_test_raw["True_nu_eta"].values
-    nb1_test = df_test_raw["NB1_nu_eta"].values
-    nb2_test = df_test_raw["NB2_nu_eta"].values
-    met_test = df_test_raw["MET"].values
-
-    results = correlation_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nb1_eta=nb1_test,
-        nb2_eta=nb2_test,
-        met=met_test,
-        seed=42,
-        bins=80,
-        range_eta=(-4.5, 4.5),
-    )
+    # df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+    #
+    # # Match test set indices
+    # df_test_raw = df_raw.iloc[-len(target_test):]
+    # true_eta_test = df_test_raw["True_nu_eta"].values
+    # nb1_test = df_test_raw["NB1_nu_eta"].values
+    # nb2_test = df_test_raw["NB2_nu_eta"].values
+    # met_test = df_test_raw["MET"].values
+    #
+    # correlation_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nb1_eta=nb1_test,
+    #     nb2_eta=nb2_test,
+    #     met=met_test,
+    #     seed=42,
+    #     bins=80,
+    #     range_eta=(-4.5, 4.5),
+    # )
 
     # ----------------------------
     # Angle Comparison
+
+    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # angle_comparison(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     batch_size=512,
+    #     num_grid=500,
+    #     range_eta=(-4.5, 4.5),
+    #     bins=40,
+    # )
+
+    # ----------------------------
+    # Eta Comparison
 
     df = pd.read_csv(data_filename,encoding_errors='ignore')
     nb1_nu_eta = df['NB1_nu_eta'].values
     nb2_nu_eta = df['NB2_nu_eta'].values
 
-    angles_result = angle_comparison(
+    compare_eta_nu_distribution(
         flow=flow,
         features_test_scaled=features_test,
         target_test=target_test,
@@ -1807,8 +2106,7 @@ if __name__ == "__main__":
         model_name=model_name,
         nb1_nu_eta=nb1_nu_eta,
         nb2_nu_eta=nb2_nu_eta,
-        batch_size=512,
-        num_grid=500,
-        range_eta=(-4.5, 4.5),
-        bins=40,
+        num_samples=10,  # 10 posterior draws per event gives clean statistics
+        bins=60,
+        range_eta=(-5.0, 5.0),
     )

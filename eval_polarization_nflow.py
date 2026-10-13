@@ -348,7 +348,7 @@ def reconstruct_flow_polarization(
         r"$\frac{1}{\sigma}\frac{d\sigma}{d\cos\theta^*}$", fontsize=12
     )
     ax_main.set_title(
-        r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$)", fontsize=13
+        r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$) [Normalising Flow]", fontsize=13
     )
     ax_main.legend(fontsize=9.0, loc="upper right")
 
