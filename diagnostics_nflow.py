@@ -1491,19 +1491,40 @@ def angle_comparison(
     # Helper: Chi-Squared Engine
     # ----------------------------------------------------
     def compute_chi2_ndf(counts_test, counts_ref):
+        counts_test = np.asarray(counts_test, dtype=float)
+        counts_ref = np.asarray(counts_ref, dtype=float)
+
         n_ref = np.sum(counts_ref)
         n_test = np.sum(counts_test)
-        scale = n_ref / n_test
 
-        scaled_test = counts_test * scale
-        variance = counts_ref + (scale**2) * counts_test
+        if n_ref == 0 or n_test == 0:
+            return np.nan, 0, np.nan
 
-        valid = (counts_ref > 5) & (variance > 0)
-        chi2 = np.sum(
-            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
-        )
+        # 1. Best estimate of true bin probabilities under Null Hypothesis (pooled)
+        p_pooled = (counts_ref + counts_test) / (n_ref + n_test)
+
+        # 2. Expected counts in each bin
+        exp_ref = n_ref * p_pooled
+        exp_test = n_test * p_pooled
+
+        # 3. Filter bins: require at least 5 expected events in both distributions
+        valid = (exp_ref >= 5.0) & (exp_test >= 5.0)
+
+        if np.sum(valid) <= 1:
+            return np.nan, 0, np.nan
+
+        # 4. Standard Pearson Two-Sample Chi2
+        # Sum of (Obs - Exp)^2 / Exp for both histograms
+        chi2_ref = (counts_ref[valid] - exp_ref[valid]) ** 2 / exp_ref[valid]
+        chi2_test = (counts_test[valid] - exp_test[valid]) ** 2 / exp_test[valid]
+
+        chi2 = np.sum(chi2_ref + chi2_test)
+
+        # 5. Degrees of Freedom
+        # K valid bins - 1 constraint from fixing total normalization
         ndf = np.sum(valid) - 1
-        chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
+        chi2_ndf = chi2 / ndf
+
         return chi2, ndf, chi2_ndf
 
     # ----------------------------------------------------
@@ -1700,19 +1721,40 @@ def compare_eta_nu_distribution(
     # 4. Two-Sample Poisson Chi-Squared Function
     # ----------------------------------------------------
     def compute_chi2_ndf(counts_test, counts_ref):
+        counts_test = np.asarray(counts_test, dtype=float)
+        counts_ref = np.asarray(counts_ref, dtype=float)
+
         n_ref = np.sum(counts_ref)
         n_test = np.sum(counts_test)
-        scale = n_ref / n_test
 
-        scaled_test = counts_test * scale
-        variance = counts_ref + (scale**2) * counts_test
+        if n_ref == 0 or n_test == 0:
+            return np.nan, 0, np.nan
 
-        valid = (counts_ref > 5) & (variance > 0)
-        chi2 = np.sum(
-            (counts_ref[valid] - scaled_test[valid]) ** 2 / variance[valid]
-        )
+        # 1. Best estimate of true bin probabilities under Null Hypothesis (pooled)
+        p_pooled = (counts_ref + counts_test) / (n_ref + n_test)
+
+        # 2. Expected counts in each bin
+        exp_ref = n_ref * p_pooled
+        exp_test = n_test * p_pooled
+
+        # 3. Filter bins: require at least 5 expected events in both distributions
+        valid = (exp_ref >= 5.0) & (exp_test >= 5.0)
+
+        if np.sum(valid) <= 1:
+            return np.nan, 0, np.nan
+
+        # 4. Standard Pearson Two-Sample Chi2
+        # Sum of (Obs - Exp)^2 / Exp for both histograms
+        chi2_ref = (counts_ref[valid] - exp_ref[valid]) ** 2 / exp_ref[valid]
+        chi2_test = (counts_test[valid] - exp_test[valid]) ** 2 / exp_test[valid]
+
+        chi2 = np.sum(chi2_ref + chi2_test)
+
+        # 5. Degrees of Freedom
+        # K valid bins - 1 constraint from fixing total normalization
         ndf = np.sum(valid) - 1
-        chi2_ndf = chi2 / ndf if ndf > 0 else np.nan
+        chi2_ndf = chi2 / ndf
+
         return chi2, ndf, chi2_ndf
 
     # ----------------------------------------------------
