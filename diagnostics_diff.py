@@ -150,7 +150,7 @@ def correlation_test_diffusion(
     device=None,
     batch_size=512,
     num_samples=10,  # Number of stochastic samples for panels (a) and (c)
-    range_eta=(-4.5, 4.5),
+    range_eta=(-5,5),
     bins=80,
     seed=42,
 ):
@@ -1248,17 +1248,18 @@ if __name__ == "__main__":
     # ------------------------------------
     # correlation test
 
-    # correlation_test_diffusion(
-    #     diffusion_model=diffusion_model,
-    #     dataset=dataset,
-    #     model_name=model_name,
-    #     nb1_eta=nb1_eta,
-    #     nb2_eta=nb2_eta,
-    #     met=met,
-    #     scaler_target=scaler_target,
-    #     num_samples=10,
-    #     batch_size=512,
-    # )
+    correlation_test_diffusion(
+        diffusion_model=diffusion_model,
+        dataset=dataset,
+        model_name=model_name,
+        nb1_eta=nb1_eta,
+        nb2_eta=nb2_eta,
+        met=met,
+        scaler_target=scaler_target,
+        num_samples=10,
+        batch_size=512,
+        range_eta=(-5,5)
+    )
 
     # ------------------------------------
     # Plot event posterior
@@ -1278,17 +1279,17 @@ if __name__ == "__main__":
     # ------------------------------------
     # Eta comparison
 
-    compare_eta_nu_distribution_diffusion(
-        diffusion_model=diffusion_model,
-        features_test=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        scaler_target=scaler_target,  # Inverse transforms predictions automatically
-        model_name=model_name,
-        nb1_nu_eta=nb1_eta,
-        nb2_nu_eta=nb2_eta,
-        num_samples=1,  # Fast 1-sample evaluation across the dataset
-        batch_size=1024,
-        bins=60,
-        range_eta=(-5.0, 5.0),
-    )
+    # compare_eta_nu_distribution_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     features_test=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     scaler_target=scaler_target,  # Inverse transforms predictions automatically
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_eta,
+    #     nb2_nu_eta=nb2_eta,
+    #     num_samples=1,  # Fast 1-sample evaluation across the dataset
+    #     batch_size=1024,
+    #     bins=60,
+    #     range_eta=(-5.0, 5.0),
+    # )
