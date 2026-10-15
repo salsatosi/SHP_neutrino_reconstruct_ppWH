@@ -1943,7 +1943,7 @@ def compare_eta_nu_distribution(
 
 if __name__ == "__main__":
     time = '20261004-093834'
-    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2091,26 +2091,26 @@ if __name__ == "__main__":
     # ----------------------------
     # Correlation Test
 
-    # df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
-    #
-    # # Match test set indices
-    # df_test_raw = df_raw.iloc[-len(target_test):]
-    # true_eta_test = df_test_raw["True_nu_eta"].values
-    # nb1_test = df_test_raw["NB1_nu_eta"].values
-    # nb2_test = df_test_raw["NB2_nu_eta"].values
-    # met_test = df_test_raw["MET"].values
-    #
-    # correlation_test(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     model_name=model_name,
-    #     nb1_eta=nb1_test,
-    #     nb2_eta=nb2_test,
-    #     met=met_test,
-    #     seed=42,
-    #     bins=80,
-    #     range_eta=(-4.5, 4.5),
-    # )
+    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+
+    # Match test set indices
+    df_test_raw = df_raw.iloc[-len(target_test):]
+    true_eta_test = df_test_raw["True_nu_eta"].values
+    nb1_test = df_test_raw["NB1_nu_eta"].values
+    nb2_test = df_test_raw["NB2_nu_eta"].values
+    met_test = df_test_raw["MET"].values
+
+    correlation_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        nb1_eta=nb1_test,
+        nb2_eta=nb2_test,
+        met=met_test,
+        seed=42,
+        bins=80,
+        range_eta=(-5,5),
+    )
 
     # ----------------------------
     # Angle Comparison
@@ -2129,26 +2129,26 @@ if __name__ == "__main__":
     #     nb2_nu_eta=nb2_nu_eta,
     #     batch_size=512,
     #     num_grid=500,
-    #     range_eta=(-4.5, 4.5),
+    #     range_eta=(-5, 5),
     #     bins=40,
     # )
 
     # ----------------------------
     # Eta Comparison
 
-    df = pd.read_csv(data_filename,encoding_errors='ignore')
-    nb1_nu_eta = df['NB1_nu_eta'].values
-    nb2_nu_eta = df['NB2_nu_eta'].values
-
-    compare_eta_nu_distribution(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        nb1_nu_eta=nb1_nu_eta,
-        nb2_nu_eta=nb2_nu_eta,
-        num_samples=10,  # 10 posterior draws per event gives clean statistics
-        bins=60,
-        range_eta=(-5.0, 5.0),
-    )
+    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # compare_eta_nu_distribution(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     num_samples=10,  # 10 posterior draws per event gives clean statistics
+    #     bins=60,
+    #     range_eta=(-5.0, 5.0),
+    # )
