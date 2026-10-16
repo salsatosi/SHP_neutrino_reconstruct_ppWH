@@ -708,26 +708,42 @@ def invariant_mass_reconstruction(
     met = features_unscaled[:, FEATURES.index("MET")]
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
-    higgs_pt = features_unscaled[:, FEATURES.index("Higgs_pT")]
-    higgs_eta = features_unscaled[:, FEATURES.index("Higgs_eta")]
-    higgs_e = features_unscaled[:, FEATURES.index("Higgs_E")]
-    phi_h = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_Higgs")]
+    leadb_pt = features_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = features_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    p4_leadb = np.stack(
+        [
+            leadb_pt * np.cos(leadb_phi),
+            leadb_pt * np.sin(leadb_phi),
+            leadb_pt * np.sinh(leadb_eta),
+            leadb_e,
+        ],
+        axis=-1,
+    )
+
+    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+
+    p4_subleadb = np.stack(
+        [
+            subleadb_pt * np.cos(subleadb_phi),
+            subleadb_pt * np.sin(subleadb_phi),
+            subleadb_pt * np.sinh(subleadb_eta),
+            subleadb_e,
+        ],
+        axis=-1,
+    )
+
+    p4_h = p4_leadb + p4_subleadb
 
     true_eta = target_test.flatten()
 
     # 3. Base 4-momenta for Lepton (phi_lep = 0) and Higgs
     p4_lep = np.stack(
         [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
-        axis=-1,
-    )
-
-    p4_h = np.stack(
-        [
-            higgs_pt * np.cos(phi_h),
-            higgs_pt * np.sin(phi_h),
-            higgs_pt * np.sinh(higgs_eta),
-            higgs_e,
-        ],
         axis=-1,
     )
 
@@ -892,7 +908,7 @@ def correlation_test(
     batch_size=512,
     num_samples=10,
     num_grid=250,
-    range_eta=(-4.5, 4.5),
+    range_eta=(-5, 5),
     bins=80,
     seed=42,
 ):
@@ -1259,92 +1275,96 @@ def lorentz_boost(p4, beta):
 
 def unit_vector(v):
     norm = np.linalg.norm(v, axis=-1, keepdims=True)
-    return v / np.maximum(1e-9, norm)
+    return v / np.maximum(norm, 1e-9)
 
 
 def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
+    """Correctly computes angular observables in the WH Center-of-Mass frame
 
-    # 1. Build intermediate composite systems
-    p4_w = p4_lep + p4_nu  # p4Z1 in C++
-    p4_h = p4_b1 + p4_b2  # p4Z2 in C++
-    p4_wh = p4_w + p4_h  # p4H / p4X in C++
+    and W/H helicity rest frames according to the paper's definition.
+    """
+    # ----------------------------------------------------
+    # 1. Composite 4-momenta in Lab Frame (px, py, pz, E)
+    # ----------------------------------------------------
+    p4_w = p4_lep + p4_nu
+    p4_h = p4_b1 + p4_b2
+    p4_wh = p4_w + p4_h
 
     # ----------------------------------------------------
-    # costhetastar (Angle of W in WH CoM frame)
+    # 2. Boost ALL particles to the WH Center-of-Mass Frame (X)
+    # (Note: beta is POSITIVE because lorentz_boost subtracts gamma*E*beta!)
     # ----------------------------------------------------
-    boost_x = -p4_wh[:, :3] / p4_wh[:, 3:4]
-    p4_w_X = lorentz_boost(p4_w, boost_x)
+    beta_wh = p4_wh[:, :3] / p4_wh[:, 3:4]
+
+    p4_w_X = lorentz_boost(p4_w, beta_wh)
+    p4_h_X = lorentz_boost(p4_h, beta_wh)
+    p4_lep_X = lorentz_boost(p4_lep, beta_wh)
+    p4_nu_X = lorentz_boost(p4_nu, beta_wh)
+    p4_b1_X = lorentz_boost(p4_b1, beta_wh)
+    p4_b2_X = lorentz_boost(p4_b2, beta_wh)
+
     p3_w_X = p4_w_X[:, :3]
+    u_w_X = unit_vector(p3_w_X)
 
+    # ----------------------------------------------------
+    # costhetastar: Direction of W in WH CoM frame vs. Beam Axis (z)
+    # ----------------------------------------------------
     costhetastar = p3_w_X[:, 2] / np.maximum(
         1e-9, np.linalg.norm(p3_w_X, axis=-1)
     )
     costhetastar = np.clip(costhetastar, -1.0, 1.0)
 
     # ----------------------------------------------------
-    # costheta1 (Lepton in W rest frame vs Higgs direction)
+    # costheta1: Lepton in W rest frame vs. W flight direction in WH frame
+    # (Boost from WH frame -> W rest frame)
     # ----------------------------------------------------
-    boost_w = -p4_w[:, :3] / p4_w[:, 3:4]
-    p4_lep_BW = lorentz_boost(p4_lep, boost_w)
-    p4_h_BW = lorentz_boost(p4_h, boost_w)
+    beta_w_in_X = p4_w_X[:, :3] / p4_w_X[:, 3:4]
+    p4_lep_in_W = lorentz_boost(p4_lep_X, beta_w_in_X)
+    u_lep_in_W = unit_vector(p4_lep_in_W[:, :3])
 
-    u_lep_BW = unit_vector(p4_lep_BW[:, :3])
-    u_h_BW = unit_vector(p4_h_BW[:, :3])
-    costheta1 = -np.sum(u_h_BW * u_lep_BW, axis=-1)
+    # Angle relative to W's direction of flight in the WH frame
+    costheta1 = np.sum(u_lep_in_W * u_w_X, axis=-1)
     costheta1 = np.clip(costheta1, -1.0, 1.0)
 
     # ----------------------------------------------------
-    # costheta2 (Leading b-jet in Higgs rest frame vs W direction)
+    # costheta2: Leading b-jet in H rest frame vs. H flight direction in WH frame
+    # (Boost from WH frame -> H rest frame)
     # ----------------------------------------------------
-    boost_h = -p4_h[:, :3] / p4_h[:, 3:4]
-    p4_b1_BH = lorentz_boost(p4_b1, boost_h)
-    p4_w_BH = lorentz_boost(p4_w, boost_h)
+    beta_h_in_X = p4_h_X[:, :3] / p4_h_X[:, 3:4]
+    p4_b1_in_H = lorentz_boost(p4_b1_X, beta_h_in_X)
+    u_b1_in_H = unit_vector(p4_b1_in_H[:, :3])
+    u_h_X = unit_vector(p4_h_X[:, :3])
 
-    u_b1_BH = unit_vector(p4_b1_BH[:, :3])
-    u_w_BH = unit_vector(p4_w_BH[:, :3])
-    costheta2 = -np.sum(u_w_BH * u_b1_BH, axis=-1)
+    costheta2 = np.sum(u_b1_in_H * u_h_X, axis=-1)
     costheta2 = np.clip(costheta2, -1.0, 1.0)
 
     # ----------------------------------------------------
-    # Phi and Phi1 (In WH CoM frame)
+    # Planes and Azimuthal Angles (All in WH CoM frame)
     # ----------------------------------------------------
-    p4_lep_X = lorentz_boost(p4_lep, boost_x)
-    p4_nu_X = lorentz_boost(p4_nu, boost_x)
-    p4_b1_X = lorentz_boost(p4_b1, boost_x)
-    p4_b2_X = lorentz_boost(p4_b2, boost_x)
+    # Normal to W decay plane
+    normal1_X = unit_vector(np.cross(p4_lep_X[:, :3], p4_nu_X[:, :3]))
 
-    p3_w_unit_X = unit_vector(p3_w_X)
+    # Normal to H decay plane
+    normal2_X = unit_vector(np.cross(p4_b1_X[:, :3], p4_b2_X[:, :3]))
 
-    # Normal vectors to the decay planes
-    normal1_X = unit_vector(
-        np.cross(p4_lep_X[:, :3], p4_nu_X[:, :3])
-    )  # W decay plane
-    normal2_X = unit_vector(
-        np.cross(p4_b1_X[:, :3], p4_b2_X[:, :3])
-    )  # H decay plane
-
-    # Normal vector to the scattering / production plane (beamAxis = 0, 0, 1)
-    beam_axis = np.zeros_like(p3_w_unit_X)
+    # Normal to production / scattering plane (Beam axis = [0, 0, 1])
+    beam_axis = np.zeros_like(u_w_X)
     beam_axis[:, 2] = 1.0
-    normalSC_X = unit_vector(np.cross(beam_axis, p3_w_unit_X))
+    normalSC_X = unit_vector(np.cross(beam_axis, u_w_X))
 
-    # --- Phi (Angle between W decay plane and H decay plane) ---
-    tmp_sgn_phi = np.sum(p3_w_unit_X * np.cross(normal1_X, normal2_X), axis=-1)
+    # --- Phi (Angle between W and H decay planes) ---
+    tmp_sgn_phi = np.sum(u_w_X * np.cross(normal1_X, normal2_X), axis=-1)
     sgn_phi = np.sign(tmp_sgn_phi)
     dot_12 = np.clip(np.sum(normal1_X * normal2_X, axis=-1), -1.0, 1.0)
     Phi = sgn_phi * np.arccos(-dot_12)
 
     # --- Phi1 (Angle between W decay plane and scattering plane) ---
-    tmp_sgn_phi1 = np.sum(
-        p3_w_unit_X * np.cross(normal1_X, normalSC_X), axis=-1
-    )
+    tmp_sgn_phi1 = np.sum(u_w_X * np.cross(normal1_X, normalSC_X), axis=-1)
     sgn_phi1 = np.sign(tmp_sgn_phi1)
     dot_1sc = np.clip(np.sum(normal1_X * normalSC_X, axis=-1), -1.0, 1.0)
     Phi1 = sgn_phi1 * np.arccos(dot_1sc)
 
-    # ----------------------------------------------------
-    # dphi_ll (Azimuthal angle between lepton and neutrino in WH frame)
-    # ----------------------------------------------------
+    # --- dphi_ll (Azimuthal separation between lepton and neutrino in WH frame) ---
     phi_lep_X = np.arctan2(p4_lep_X[:, 1], p4_lep_X[:, 0])
     phi_nu_X = np.arctan2(p4_nu_X[:, 1], p4_nu_X[:, 0])
     dphi_ll = np.abs(
@@ -1373,14 +1393,22 @@ def angle_comparison(
     num_grid=500,  # Grid resolution for exact Mode (MAP) search
     range_eta=(-4.5, 4.5),
     bins=40,
+    seed=42,
+    device=None,
 ):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     flow.load_state_dict(torch.load(model_name, map_location=device))
     flow.eval()
 
-    # 1. Unscale features to physical units (GeV, radians)
+    # ----------------------------------------------------
+    # 1. Unscale features to physical units
+    # ----------------------------------------------------
     feat_unscaled = scaler_features.inverse_transform(features_test_scaled)
+    n_events = len(target_test)
 
-    # Extract Lepton kinematics
+    # Lepton kinematics (aligned along x-axis: phi_l = 0)
     lep_pt = feat_unscaled[:, FEATURES.index("ChargedLep_pT")]
     lep_eta = feat_unscaled[:, FEATURES.index("ChargedLep_Eta")]
     lep_e = feat_unscaled[:, FEATURES.index("ChargedLep_E")]
@@ -1389,11 +1417,11 @@ def angle_comparison(
         axis=-1,
     )
 
-    # Extract MET kinematics
+    # MET kinematics
     met = feat_unscaled[:, FEATURES.index("MET")]
     phi_nu = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
-    # Extract b-Jets kinematics
+    # b-Jets kinematics
     b1_pt = feat_unscaled[:, FEATURES.index("LeadBJet_pT")]
     b1_eta = feat_unscaled[:, FEATURES.index("LeadBJet_Eta")]
     b1_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
@@ -1435,60 +1463,66 @@ def angle_comparison(
     # 2. Reconstruct Neutrino 4-Vectors
     # ----------------------------------------------------
     # (a) True MC
+    print("Computing True MC Angles...")
     p4_nu_true = build_p4_nu(true_eta)
     obs_true = compute_angles_vectorized(p4_lep, p4_nu_true, p4_b1, p4_b2)
 
-    # (b) Flow Mode (MAP) Estimator: Grid search for highest peak
+    # (b) Model prediction
     features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
     loader = DataLoader(
         TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
     )
 
-    grid = torch.linspace(
-        range_eta[0], range_eta[1], num_grid, device=device
-    )  # [G]
-    all_flow_modes = []
-
+    all_flow_samples = []
     with torch.no_grad():
         for (bx,) in loader:
             bx = bx.to(device)
-            B = bx.size(0)
+            # Sample 10 draws per event to correctly populate the continuous quantum phase space
+            s = flow.sample(num_samples=10, context=bx)
+            all_flow_samples.append(s.squeeze(-1).cpu().numpy())
 
-            # Replicate grid and context: [B * G, 1] and [B * G, n_features]
-            g_in = (
-                grid.view(1, num_grid, 1)
-                .expand(B, num_grid, 1)
-                .reshape(B * num_grid, 1)
-            )
-            c_in = (
-                bx.unsqueeze(1).expand(B, num_grid, -1).reshape(B * num_grid, -1)
-            )
+    eta_flow_samples = np.concatenate(all_flow_samples, axis=0)
 
-            # Exact log-prob evaluation
-            log_prob = flow.log_prob(inputs=g_in, context=c_in).view(
-                B, num_grid
-            )
+    # Repeat lepton and b-jets 10 times to match the 10 neutrino draws
+    p4_lep_rep = np.repeat(p4_lep, 10, axis=0)
+    p4_b1_rep = np.repeat(p4_b1, 10, axis=0)
+    p4_b2_rep = np.repeat(p4_b2, 10, axis=0)
+    met_rep = np.repeat(met, 10, axis=0)
+    phi_nu_rep = np.repeat(phi_nu, 10, axis=0)
 
-            # Find Mode: argmax for each event
-            best_idx = torch.argmax(log_prob, dim=1)
-            eta_mode_batch = grid[best_idx].cpu().numpy()
-            all_flow_modes.append(eta_mode_batch)
+    # Build neutrino and compute angles
+    px = met_rep * np.cos(phi_nu_rep)
+    py = met_rep * np.sin(phi_nu_rep)
+    pz = met_rep * np.sinh(eta_flow_samples.flatten())
+    e = met_rep * np.cosh(eta_flow_samples.flatten())
+    p4_nu_flow = np.stack([px, py, pz, e], axis=-1)
 
-    eta_flow_mode = np.concatenate(all_flow_modes)
-    p4_nu_flow = build_p4_nu(eta_flow_mode)
-    obs_flow = compute_angles_vectorized(p4_lep, p4_nu_flow, p4_b1, p4_b2)
+    obs_flow = compute_angles_vectorized(
+        p4_lep_rep, p4_nu_flow, p4_b1_rep, p4_b2_rep
+    )
 
-    # (c) Paper Baseline: min-|pz|
-    obs_base = None
+
+    # (c) Baselines: Random 50/50 and min-|pz|
+    obs_minpz = None
+    obs_5050 = None
+
     if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Min-|pz|
         pz1 = np.abs(met * np.sinh(nb1_nu_eta))
         pz2 = np.abs(met * np.sinh(nb2_nu_eta))
         eta_minpz = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
-        p4_nu_base = build_p4_nu(eta_minpz)
-        obs_base = compute_angles_vectorized(p4_lep, p4_nu_base, p4_b1, p4_b2)
+        p4_nu_minpz = build_p4_nu(eta_minpz)
+        obs_minpz = compute_angles_vectorized(p4_lep, p4_nu_minpz, p4_b1, p4_b2)
+
+        # 50/50
+        rng = np.random.default_rng(seed=seed)
+        coin = rng.choice([True, False], size=n_events)
+        eta_5050 = np.where(coin, nb1_nu_eta, nb2_nu_eta)
+        p4_nu_5050 = build_p4_nu(eta_5050)
+        obs_5050 = compute_angles_vectorized(p4_lep, p4_nu_5050, p4_b1, p4_b2)
 
     # ----------------------------------------------------
-    # Helper: Chi-Squared Engine
+    # Helper: Two-Sample Poisson Chi2
     # ----------------------------------------------------
     def compute_chi2_ndf(counts_test, counts_ref):
         counts_test = np.asarray(counts_test, dtype=float)
@@ -1496,91 +1530,95 @@ def angle_comparison(
 
         n_ref = np.sum(counts_ref)
         n_test = np.sum(counts_test)
-
         if n_ref == 0 or n_test == 0:
             return np.nan, 0, np.nan
 
-        # 1. Best estimate of true bin probabilities under Null Hypothesis (pooled)
         p_pooled = (counts_ref + counts_test) / (n_ref + n_test)
-
-        # 2. Expected counts in each bin
         exp_ref = n_ref * p_pooled
         exp_test = n_test * p_pooled
 
-        # 3. Filter bins: require at least 5 expected events in both distributions
         valid = (exp_ref >= 5.0) & (exp_test >= 5.0)
-
         if np.sum(valid) <= 1:
             return np.nan, 0, np.nan
 
-        # 4. Standard Pearson Two-Sample Chi2
-        # Sum of (Obs - Exp)^2 / Exp for both histograms
         chi2_ref = (counts_ref[valid] - exp_ref[valid]) ** 2 / exp_ref[valid]
-        chi2_test = (counts_test[valid] - exp_test[valid]) ** 2 / exp_test[valid]
+        chi2_test = (
+            counts_test[valid] - exp_test[valid]
+        ) ** 2 / exp_test[valid]
 
         chi2 = np.sum(chi2_ref + chi2_test)
-
-        # 5. Degrees of Freedom
-        # K valid bins - 1 constraint from fixing total normalization
         ndf = np.sum(valid) - 1
-        chi2_ndf = chi2 / ndf
-
-        return chi2, ndf, chi2_ndf
+        return chi2, ndf, chi2 / ndf
 
     # ----------------------------------------------------
-    # 3. Calculate Chi2 and Prepare Plotting
+    # 3. Calculate Chi2 and Plot in a 2x2 Grid
     # ----------------------------------------------------
     plot_vars = [
-        ("costhetastar", r"$\cos\theta^*_{VH}$", (-1.0, 1.0)),
+        ("costhetastar", r"$\cos\theta^*_{WH}$", (-1.0, 1.0)),
         ("costheta1", r"$\cos\theta_1$", (-1.0, 1.0)),
         ("Phi1", r"$|\Phi_1|$", (0.0, np.pi)),
         ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$", (0.0, np.pi)),
     ]
 
-    chi2_results = {}
-
-    print("\n" + "=" * 95)
+    print("\n" + "=" * 90)
     print(
-        f"{'Observable':<28} | {'Flow (Mode) chi2/ndf':<28} | {'Baseline min-|pz| chi2/ndf':<28}"
+        f"{'Observable':<22} | {'Model Samples χ²/ndf':<20} | {'50/50 χ²/ndf':<18} | {'Min-|pz| χ²/ndf':<18}"
     )
-    print("=" * 95)
+    print("=" * 90)
 
-    fig, axes = plt.subplots(
-        4, 1, figsize=(8.5, 14.5), gridspec_kw={"hspace": 0.35}
-    )
+    # 2x2 Clean Subplot Grid
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9.5))
+    axes = axes.flatten()
 
     for i, (key, label, rng) in enumerate(plot_vars):
-        # Raw counts for chi2 calculation
-        raw_true, edges = np.histogram(
-            obs_true[key], bins=bins, range=rng
-        )
-        raw_flow, _ = np.histogram(obs_flow[key], bins=bins, range=rng)
+        # Extract data (take absolute value for Phi1 to avoid negative truncation!)
+        if key == "Phi1":
+            data_true = np.abs(obs_true[key])
+            data_flow = np.abs(obs_flow[key])
+            data_5050 = np.abs(obs_5050[key]) if obs_5050 else None
+            data_minpz = np.abs(obs_minpz[key]) if obs_minpz else None
+        else:
+            data_true = obs_true[key]
+            data_flow = obs_flow[key]
+            data_5050 = obs_5050[key] if obs_5050 else None
+            data_minpz = obs_minpz[key] if obs_minpz else None
 
-        # Flow chi2
-        chi2_f, ndf_f, r_chi2_f = compute_chi2_ndf(raw_flow, raw_true)
+        # Filter NaNs from complex analytical solutions
+        data_true = data_true[~np.isnan(data_true)]
+        data_flow = data_flow[~np.isnan(data_flow)]
 
-        # Baseline chi2
-        chi2_b, ndf_b, r_chi2_b = np.nan, np.nan, np.nan
-        if obs_base is not None:
-            raw_base, _ = np.histogram(obs_base[key], bins=bins, range=rng)
-            chi2_b, ndf_b, r_chi2_b = compute_chi2_ndf(raw_base, raw_true)
+        # Raw counts for chi2
+        raw_true, edges = np.histogram(data_true, bins=bins, range=rng)
+        raw_flow, _ = np.histogram(data_flow, bins=bins, range=rng)
+        centers = 0.5 * (edges[:-1] + edges[1:])
 
-        chi2_results[key] = {
-            "flow": (chi2_f, ndf_f, r_chi2_f),
-            "baseline": (chi2_b, ndf_b, r_chi2_b),
-        }
+        _, _, r_chi2_f = compute_chi2_ndf(raw_flow, raw_true)
+
+        # Baseline Chi2
+        r_chi2_50 = np.nan
+        if data_5050 is not None:
+            raw_5050, _ = np.histogram(
+                data_5050[~np.isnan(data_5050)], bins=bins, range=rng
+            )
+            _, _, r_chi2_50 = compute_chi2_ndf(raw_5050, raw_true)
+
+        r_chi2_pz = np.nan
+        if data_minpz is not None:
+            raw_minpz, _ = np.histogram(
+                data_minpz[~np.isnan(data_minpz)], bins=bins, range=rng
+            )
+            _, _, r_chi2_pz = compute_chi2_ndf(raw_minpz, raw_true)
 
         print(
-            f"{key:<28} | {r_chi2_f:<8.2f} (chi2: {chi2_f:<7.1f}, ndf: {ndf_f:<2}) | {r_chi2_b:<8.2f} (chi2: {chi2_b:<7.1f}, ndf: {ndf_b:<2})"
+            f"{key:<22} | {r_chi2_f:<20.2f} | {r_chi2_50:<18.2f} | {r_chi2_pz:<18.2f}"
         )
 
         # Normalized densities for plotting
-        centers = 0.5 * (edges[:-1] + edges[1:])
         norm_true, _ = np.histogram(
-            obs_true[key], bins=bins, range=rng, density=True
+            data_true, bins=bins, range=rng, density=True
         )
         norm_flow, _ = np.histogram(
-            obs_flow[key], bins=bins, range=rng, density=True
+            data_flow, bins=bins, range=rng, density=True
         )
 
         ax = axes[i]
@@ -1589,7 +1627,7 @@ def angle_comparison(
             bins=edges,
             weights=norm_true,
             histtype="step",
-            lw=2.0,
+            lw=2.2,
             color="black",
             label="MC Truth",
         )
@@ -1600,36 +1638,56 @@ def angle_comparison(
             histtype="stepfilled",
             alpha=0.45,
             color="royalblue",
-            label=rf"Flow Mode ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.1f}$)",
+            label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.1f}$)",
         )
 
-        if obs_base is not None:
-            norm_base, _ = np.histogram(
-                obs_base[key], bins=bins, range=rng, density=True
+        if data_5050 is not None:
+            norm_5050, _ = np.histogram(
+                data_5050[~np.isnan(data_5050)],
+                bins=bins,
+                range=rng,
+                density=True,
             )
             ax.hist(
                 centers,
                 bins=edges,
-                weights=norm_base,
+                weights=norm_5050,
                 histtype="step",
                 ls="--",
-                lw=1.8,
+                lw=1.6,
                 color="crimson",
-                label=rf"Baseline $\min|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_b:.1f}$)",
+                label=rf"50/50 ($\chi^2/\mathrm{{ndf}} = {r_chi2_50:.1f}$)",
             )
 
-        ax.set_xlabel(label, fontsize=11)
-        ax.set_ylabel("Normalized Density", fontsize=10)
+        if data_minpz is not None:
+            norm_minpz, _ = np.histogram(
+                data_minpz[~np.isnan(data_minpz)],
+                bins=bins,
+                range=rng,
+                density=True,
+            )
+            ax.hist(
+                centers,
+                bins=edges,
+                weights=norm_minpz,
+                histtype="step",
+                ls=":",
+                lw=1.8,
+                color="darkorange",
+                label=rf"Min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_pz:.1f}$)",
+            )
+
+        ax.set_xlabel(label, fontsize=12)
+        ax.set_ylabel("Normalized Density", fontsize=11)
         ax.set_xlim(rng)
+        ax.legend(fontsize=8.5, loc="upper right")
 
-        ax.legend(fontsize=9, loc="upper right")
-
-    print("=" * 95)
+    print("=" * 90)
 
     plt.suptitle(
-        "Polarization Observables & Chi-Squared Test vs. MC Truth [Normalising Flow]",
-        fontsize=13,
-        y=0.99,
+        r"Reconstruction of Angular Observables",
+        fontsize=14,
+        y=0.995,
     )
     plt.tight_layout()
     plt.show()
@@ -1637,8 +1695,8 @@ def angle_comparison(
     return {
         "obs_true": obs_true,
         "obs_flow": obs_flow,
-        "obs_base": obs_base,
-        "chi2_results": chi2_results,
+        "obs_5050": obs_5050,
+        "obs_minpz": obs_minpz,
     }
 
 
@@ -1942,8 +2000,8 @@ def compare_eta_nu_distribution(
 
 
 if __name__ == "__main__":
-    time = '20261004-093834'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    time = '20261016-201026'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2077,61 +2135,61 @@ if __name__ == "__main__":
     # ----------------------------
     # Invariant Mass Reconstruction Test
 
-    # invariant_mass_reconstruction(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     num_samples=500,
-    #     batch_size=512,
-    #     num_bins=120
-    # )
+    invariant_mass_reconstruction(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        num_samples=500,
+        batch_size=512,
+        num_bins=120
+    )
 
     # ----------------------------
     # Correlation Test
 
-    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
-
-    # Match test set indices
-    df_test_raw = df_raw.iloc[-len(target_test):]
-    true_eta_test = df_test_raw["True_nu_eta"].values
-    nb1_test = df_test_raw["NB1_nu_eta"].values
-    nb2_test = df_test_raw["NB2_nu_eta"].values
-    met_test = df_test_raw["MET"].values
-
-    correlation_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nb1_eta=nb1_test,
-        nb2_eta=nb2_test,
-        met=met_test,
-        seed=42,
-        bins=80,
-        range_eta=(-5,5),
-    )
+    # df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+    #
+    # # Match test set indices
+    # df_test_raw = df_raw.iloc[-len(target_test):]
+    # true_eta_test = df_test_raw["True_nu_eta"].values
+    # nb1_test = df_test_raw["NB1_nu_eta"].values
+    # nb2_test = df_test_raw["NB2_nu_eta"].values
+    # met_test = df_test_raw["MET"].values
+    #
+    # correlation_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nb1_eta=nb1_test,
+    #     nb2_eta=nb2_test,
+    #     met=met_test,
+    #     seed=42,
+    #     bins=80,
+    #     range_eta=(-5,5),
+    # )
 
     # ----------------------------
     # Angle Comparison
 
-    # df = pd.read_csv(data_filename,encoding_errors='ignore')
-    # nb1_nu_eta = df['NB1_nu_eta'].values
-    # nb2_nu_eta = df['NB2_nu_eta'].values
-    #
-    # angle_comparison(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     nb1_nu_eta=nb1_nu_eta,
-    #     nb2_nu_eta=nb2_nu_eta,
-    #     batch_size=512,
-    #     num_grid=500,
-    #     range_eta=(-5, 5),
-    #     bins=40,
-    # )
+    df = pd.read_csv(data_filename,encoding_errors='ignore')
+    nb1_nu_eta = df['NB1_nu_eta'].values
+    nb2_nu_eta = df['NB2_nu_eta'].values
+
+    angle_comparison(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        nb1_nu_eta=nb1_nu_eta,
+        nb2_nu_eta=nb2_nu_eta,
+        batch_size=512,
+        num_grid=500,
+        range_eta=(-5, 5),
+        bins=40,
+    )
 
     # ----------------------------
     # Eta Comparison

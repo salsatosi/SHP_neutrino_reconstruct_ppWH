@@ -6,7 +6,7 @@
     },
     "flow": {
         "n_layers": 1,
-        "hidden_features": 32,
+        "hidden_features": 128,
         "num_bins": 32,
         "tails": "linear",
         "tail_bound": 5.0,

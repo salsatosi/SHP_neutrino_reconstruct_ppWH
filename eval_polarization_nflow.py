@@ -445,7 +445,7 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261004-093834'
+    time = '20261016-201026'
     data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
