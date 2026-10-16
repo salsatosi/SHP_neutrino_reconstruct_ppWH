@@ -65,7 +65,8 @@ def reconstruct_diffusion_polarization(
 
     lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
     lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
-    lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    # lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
 
     met = features_unscaled[:, FEATURES.index("MET")]
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
@@ -480,9 +481,9 @@ def reconstruct_diffusion_polarization(
 
 
 if __name__ == "__main__":
-    time = "20261008-222146"
+    time = "20261026-222327"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
     )
 
     hyperparameter_file = f"models/hyperparameters_diff_{time}.json"

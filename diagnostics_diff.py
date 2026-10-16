@@ -499,26 +499,31 @@ def invariant_mass_reconstruction_diffusion(
     met = features_unscaled[:, FEATURES.index("MET")]
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
-    higgs_pt = features_unscaled[:, FEATURES.index("Higgs_pT")]
-    higgs_eta = features_unscaled[:, FEATURES.index("Higgs_eta")]
-    higgs_e = features_unscaled[:, FEATURES.index("Higgs_E")]
-    phi_h = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_Higgs")]
+    leadb_pt = features_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = features_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    p4_leadb = np.stack(
+        [leadb_pt*np.cos(leadb_phi), leadb_pt*np.sin(leadb_phi), leadb_pt * np.sinh(leadb_eta), leadb_e],
+        axis=-1,
+    )
+
+    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadB_pT")]
+    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadB_Eta")]
+    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadB_E")]
+    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadB")]
+    p4_subleadb = np.stack(
+        [subleadb_pt * np.cos(subleadb_phi), subleadb_pt * np.sin(subleadb_phi), subleadb_pt * np.sinh(subleadb_eta), subleadb_e],
+        axis=-1,
+    )
+
+    p4_h = p4_leadb + p4_subleadb
 
     true_eta = target_test.flatten()
 
     # 3. Base 4-momenta for Lepton (phi_lep = 0) and Higgs
     p4_lep = np.stack(
         [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
-        axis=-1,
-    )
-
-    p4_h = np.stack(
-        [
-            higgs_pt * np.cos(phi_h),
-            higgs_pt * np.sin(phi_h),
-            higgs_pt * np.sinh(higgs_eta),
-            higgs_e,
-        ],
         axis=-1,
     )
 
