@@ -1304,7 +1304,9 @@ def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
     p4_b2_X = lorentz_boost(p4_b2, beta_wh)
 
     p3_w_X = p4_w_X[:, :3]
+    p3_h_X = p4_h_X[:, :3]
     u_w_X = unit_vector(p3_w_X)
+    u_h_X = unit_vector(p3_h_X)
 
     # ----------------------------------------------------
     # costhetastar: Direction of W in WH CoM frame vs. Beam Axis (z)
@@ -1316,27 +1318,14 @@ def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
 
     # ----------------------------------------------------
     # costheta1: Lepton in W rest frame vs. W flight direction in WH frame
-    # (Boost from WH frame -> W rest frame)
     # ----------------------------------------------------
-    beta_w_in_X = p4_w_X[:, :3] / p4_w_X[:, 3:4]
-    p4_lep_in_W = lorentz_boost(p4_lep_X, beta_w_in_X)
+    beta_w = p4_w[:, :3] / p4_w[:, 3:4]
+    p4_lep_in_W = lorentz_boost(p4_lep, beta_w)
     u_lep_in_W = unit_vector(p4_lep_in_W[:, :3])
 
     # Angle relative to W's direction of flight in the WH frame
-    costheta1 = np.sum(u_lep_in_W * u_w_X, axis=-1)
+    costheta1 = np.sum(-u_lep_in_W * u_h_X, axis=-1)
     costheta1 = np.clip(costheta1, -1.0, 1.0)
-
-    # ----------------------------------------------------
-    # costheta2: Leading b-jet in H rest frame vs. H flight direction in WH frame
-    # (Boost from WH frame -> H rest frame)
-    # ----------------------------------------------------
-    beta_h_in_X = p4_h_X[:, :3] / p4_h_X[:, 3:4]
-    p4_b1_in_H = lorentz_boost(p4_b1_X, beta_h_in_X)
-    u_b1_in_H = unit_vector(p4_b1_in_H[:, :3])
-    u_h_X = unit_vector(p4_h_X[:, :3])
-
-    costheta2 = np.sum(u_b1_in_H * u_h_X, axis=-1)
-    costheta2 = np.clip(costheta2, -1.0, 1.0)
 
     # ----------------------------------------------------
     # Planes and Azimuthal Angles (All in WH CoM frame)
@@ -1374,7 +1363,6 @@ def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
     return {
         "costhetastar": costhetastar,
         "costheta1": costheta1,
-        "costheta2": costheta2,
         "Phi": Phi,
         "Phi1": Phi1,
         "dphi_ll": dphi_ll,
@@ -2001,7 +1989,7 @@ def compare_eta_nu_distribution(
 
 if __name__ == "__main__":
     time = '20261016-201026'
-    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2038,12 +2026,12 @@ if __name__ == "__main__":
     # ----------------------------
     # Coverage test
 
-    # interval_coverage(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     levels=(0.50,0.68,0.90,0.95),
-    #     model_name=model_name
-    # )
+    interval_coverage(
+        flow=flow,
+        dataset=test_dataset,
+        levels=(0.50,0.68,0.90,0.95),
+        model_name=model_name
+    )
 
     # ----------------------------
     # Shuffle test
@@ -2135,40 +2123,40 @@ if __name__ == "__main__":
     # ----------------------------
     # Invariant Mass Reconstruction Test
 
-    invariant_mass_reconstruction(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        num_samples=500,
-        batch_size=512,
-        num_bins=120
-    )
+    # invariant_mass_reconstruction(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     num_samples=500,
+    #     batch_size=512,
+    #     num_bins=120
+    # )
 
     # ----------------------------
     # Correlation Test
 
-    # df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
-    #
-    # # Match test set indices
-    # df_test_raw = df_raw.iloc[-len(target_test):]
-    # true_eta_test = df_test_raw["True_nu_eta"].values
-    # nb1_test = df_test_raw["NB1_nu_eta"].values
-    # nb2_test = df_test_raw["NB2_nu_eta"].values
-    # met_test = df_test_raw["MET"].values
-    #
-    # correlation_test(
-    #     flow=flow,
-    #     dataset=test_dataset,
-    #     model_name=model_name,
-    #     nb1_eta=nb1_test,
-    #     nb2_eta=nb2_test,
-    #     met=met_test,
-    #     seed=42,
-    #     bins=80,
-    #     range_eta=(-5,5),
-    # )
+    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
+
+    # Match test set indices
+    df_test_raw = df_raw.iloc[-len(target_test):]
+    true_eta_test = df_test_raw["True_nu_eta"].values
+    nb1_test = df_test_raw["NB1_nu_eta"].values
+    nb2_test = df_test_raw["NB2_nu_eta"].values
+    met_test = df_test_raw["MET"].values
+
+    correlation_test(
+        flow=flow,
+        dataset=test_dataset,
+        model_name=model_name,
+        nb1_eta=nb1_test,
+        nb2_eta=nb2_test,
+        met=met_test,
+        seed=42,
+        bins=80,
+        range_eta=(-5,5),
+    )
 
     # ----------------------------
     # Angle Comparison
