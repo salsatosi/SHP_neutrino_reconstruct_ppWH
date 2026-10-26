@@ -135,11 +135,10 @@ def plot_feature_importance(importances):
 
 
 if __name__ == "__main__":
-    time = '20261016-201026'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    time = '20261026-205717'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
-    # torch.manual_seed(hyperparameters["random_seed"])
 
     model_name = f"models/model_nflow_{time}.pt"
     n_features = len(FEATURES)

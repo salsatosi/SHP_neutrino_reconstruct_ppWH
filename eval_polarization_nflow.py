@@ -56,7 +56,8 @@ def reconstruct_flow_polarization(
 
     lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
     lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
-    lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    # lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
 
     met = features_unscaled[:, FEATURES.index("MET")]
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
@@ -445,7 +446,7 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261016-201026'
+    time = '20261023-121803'
     data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)

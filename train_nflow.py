@@ -104,7 +104,8 @@ FEATURES = ['ChargedLep_Charge',
             'Relative_Phi_Lep_MET',
             'Relative_Phi_Lep_LeadBJet',
             'Relative_Phi_Lep_SubleadBJet',
-            'Relative_Phi_Lep_SumLightJet']
+            'Relative_Phi_Lep_SumLightJet'
+            ]
 
 # FEATURES = ["ChargedLep_E",
 #             "ChargedLep_Eta",
@@ -330,7 +331,7 @@ if __name__ == "__main__":
 
     n_features = len(FEATURES)
     n_target = len(TARGET)
-    features, target = read_file("data/new_Input_WH_NeutrinoEtaFindingForTraining_4th_October2026.csv", FEATURES, TARGET)
+    features, target = read_file("data/new_Input_WH_NeutrinoEtaFindingForTraining_26th_October2026.csv", FEATURES, TARGET)
     train_dataset, val_dataset = split_data(features, target, hyperparameters)
     flow = normalizing_flow(
         features=n_target,

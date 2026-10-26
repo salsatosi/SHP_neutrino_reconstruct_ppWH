@@ -703,14 +703,16 @@ def invariant_mass_reconstruction(
     # 2. Extract kinematics
     lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
     lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
-    lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    # lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
 
     met = features_unscaled[:, FEATURES.index("MET")]
     phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
     leadb_pt = features_unscaled[:, FEATURES.index("LeadBJet_pT")]
     leadb_eta = features_unscaled[:, FEATURES.index("LeadBJet_Eta")]
-    leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    # leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_e = leadb_pt * np.cosh(leadb_eta)
     leadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
     p4_leadb = np.stack(
         [
@@ -724,7 +726,8 @@ def invariant_mass_reconstruction(
 
     subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
     subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
-    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    # subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_e = subleadb_pt * np.cosh(subleadb_eta)
     subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
 
     p4_subleadb = np.stack(
@@ -901,8 +904,8 @@ def correlation_test(
     flow,
     dataset,
     model_name,
-    nb1_eta,
-    nb2_eta,
+    nleadb_eta,
+    nsubleadb_eta,
     met=None,
     device=None,
     batch_size=512,
@@ -1034,15 +1037,15 @@ def correlation_test(
     # PART 2: Analytical Quadratic Solutions (NB1 & NB2)
     # =========================================================================
     valid_mask = (
-        ~np.isnan(nb1_eta)
-        & ~np.isnan(nb2_eta)
-        & ~np.isinf(nb1_eta)
-        & ~np.isinf(nb2_eta)
+        ~np.isnan(nleadb_eta)
+        & ~np.isnan(nsubleadb_eta)
+        & ~np.isinf(nleadb_eta)
+        & ~np.isinf(nsubleadb_eta)
     )
 
     t_ana = targets[valid_mask]
-    s1 = nb1_eta[valid_mask]
-    s2 = nb2_eta[valid_mask]
+    s1 = nleadb_eta[valid_mask]
+    s2 = nsubleadb_eta[valid_mask]
     m_met = met[valid_mask] if met is not None else None
 
     n_total = len(targets)
@@ -1399,7 +1402,8 @@ def angle_comparison(
     # Lepton kinematics (aligned along x-axis: phi_l = 0)
     lep_pt = feat_unscaled[:, FEATURES.index("ChargedLep_pT")]
     lep_eta = feat_unscaled[:, FEATURES.index("ChargedLep_Eta")]
-    lep_e = feat_unscaled[:, FEATURES.index("ChargedLep_E")]
+    # lep_e = feat_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
     p4_lep = np.stack(
         [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
         axis=-1,
@@ -1410,30 +1414,32 @@ def angle_comparison(
     phi_nu = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
 
     # b-Jets kinematics
-    b1_pt = feat_unscaled[:, FEATURES.index("LeadBJet_pT")]
-    b1_eta = feat_unscaled[:, FEATURES.index("LeadBJet_Eta")]
-    b1_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
-    b1_e = feat_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_pt = feat_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = feat_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    leadb_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    # leadb_e = feat_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_e = leadb_pt * np.cosh(leadb_eta)
     p4_b1 = np.stack(
         [
-            b1_pt * np.cos(b1_phi),
-            b1_pt * np.sin(b1_phi),
-            b1_pt * np.sinh(b1_eta),
-            b1_e,
+            leadb_pt * np.cos(leadb_phi),
+            leadb_pt * np.sin(leadb_phi),
+            leadb_pt * np.sinh(leadb_eta),
+            leadb_e,
         ],
         axis=-1,
     )
 
-    b2_pt = feat_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
-    b2_eta = feat_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
-    b2_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
-    b2_e = feat_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_pt = feat_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = feat_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    subleadb_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+    # subleadb_e = feat_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_e = subleadb_pt * np.cosh(subleadb_eta)
     p4_b2 = np.stack(
         [
-            b2_pt * np.cos(b2_phi),
-            b2_pt * np.sin(b2_phi),
-            b2_pt * np.sinh(b2_eta),
-            b2_e,
+            subleadb_pt * np.cos(subleadb_phi),
+            subleadb_pt * np.sin(subleadb_phi),
+            subleadb_pt * np.sinh(subleadb_eta),
+            subleadb_e,
         ],
         axis=-1,
     )
@@ -2046,7 +2052,7 @@ if __name__ == "__main__":
     # ----------------------------
     # Conditional Calibration
 
-    # index = 'ChargedLep_E'
+    # index = 'ChargedLep_pT'
     # binned_coverage(
     #     flow=flow,
     #     dataset=test_dataset,
@@ -2150,8 +2156,8 @@ if __name__ == "__main__":
         flow=flow,
         dataset=test_dataset,
         model_name=model_name,
-        nb1_eta=nb1_test,
-        nb2_eta=nb2_test,
+        nleadb_eta=nb1_test,
+        nsubleadb_eta=nb2_test,
         met=met_test,
         seed=42,
         bins=80,
