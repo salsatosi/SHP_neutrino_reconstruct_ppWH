@@ -1,22 +1,8 @@
 from train_nflow import (
     device, FEATURES, TARGET, read_file, normalizing_flow, load_hyperparameters)
-import torch
-from torch.utils.data import TensorDataset, DataLoader
-import numpy as np
-import matplotlib.pyplot as plt
-import joblib
-import datetime
-from sklearn.model_selection import train_test_split
-from scipy.stats import kstest,pearsonr, spearmanr
-from matplotlib.colors import LogNorm
-import torch.nn.functional as F
-import pandas as pd
-
-
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -135,8 +121,8 @@ def plot_feature_importance(importances):
 
 
 if __name__ == "__main__":
-    time = '20261026-205717'
-    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    time = '20261016-201026'
+    data_filename = 'data/new_Input_WH_NeutrinoEtaFindingForTraining_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
 

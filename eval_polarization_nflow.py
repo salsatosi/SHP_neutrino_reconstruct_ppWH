@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import joblib
 from sklearn.model_selection import train_test_split
 import pandas as pd
+import h5py
 
 
 def lorentz_boost(p4, beta):
@@ -174,8 +175,6 @@ def reconstruct_flow_polarization(
         n_ref = np.sum(counts_ref)
         n_test = np.sum(counts_test)
 
-        if n_ref == 0 or n_test == 0:
-            return np.nan, 0, np.nan
 
         # 1. Best estimate of true bin probabilities under Null Hypothesis (pooled)
         p_pooled = (counts_ref + counts_test) / (n_ref + n_test)
@@ -446,8 +445,8 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261023-121803'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    time = '20261027-233637'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -483,7 +482,9 @@ if __name__ == "__main__":
 
     # Extract analytical solutions from DataFrame if available
 
-    df = pd.read_csv(data_filename, encoding_errors='ignore')
+    with h5py.File(data_filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
     df_test_raw = df.iloc[-len(target_test):]  # or matching test slice
     nb1_nu_eta_test = df_test_raw['NB1_nu_eta'].values
     nb2_nu_eta_test = df_test_raw['NB2_nu_eta'].values

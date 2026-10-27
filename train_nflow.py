@@ -13,6 +13,7 @@ import datetime
 import joblib
 import json
 import torch.nn.functional as F
+import h5py
 
 
 ACTIVATION_MAP = {
@@ -135,10 +136,19 @@ def read_file(filename,FEATURES,TARGET):
     :param TARGET: list of target features
     :return:
     """
-    df = pd.read_csv(filename,encoding_errors='ignore')
+    # df = pd.read_csv(filename,encoding_errors='ignore')
+    with h5py.File(filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
+
+    # df['Relative_Phi_Lep_Higgs'] = df['Higgs_Phi'] - df['ChargedLep_Phi']
+    df['Relative_Phi_Lep_MET'] = df['MET_Phi'] - df['ChargedLep_Phi']
+    df['Relative_Phi_Lep_LeadBJet'] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
+    df['Relative_Phi_Lep_SubleadBJet'] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
+    df['Relative_Phi_Lep_SumLightJet'] = df['SumLightJets_phi'] - df['ChargedLep_Phi']
 
 
-    for col in FEATURES[-5:]:
+    for col in FEATURES[-4:]:
         df[col] = np.arctan2(np.sin(df[col]),np.cos(df[col]))
 
     features_data = df[FEATURES].values
@@ -331,7 +341,7 @@ if __name__ == "__main__":
 
     n_features = len(FEATURES)
     n_target = len(TARGET)
-    features, target = read_file("data/new_Input_WH_NeutrinoEtaFindingForTraining_26th_October2026.csv", FEATURES, TARGET)
+    features, target = read_file("data/new_Input_WH_NeutrinoEtaFindingForTraining_26th_October2026.h5", FEATURES, TARGET)
     train_dataset, val_dataset = split_data(features, target, hyperparameters)
     flow = normalizing_flow(
         features=n_target,

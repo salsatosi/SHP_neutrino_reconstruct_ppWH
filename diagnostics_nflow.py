@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import joblib
 import datetime
-from sklearn.model_selection import train_test_split
+import h5py
 from scipy.stats import kstest,pearsonr, spearmanr
 from matplotlib.colors import LogNorm
 import torch.nn.functional as F
@@ -1995,7 +1995,7 @@ def compare_eta_nu_distribution(
 
 if __name__ == "__main__":
     time = '20261016-201026'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.csv'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2003,16 +2003,7 @@ if __name__ == "__main__":
     model_name = f"models/model_nflow_{time}.pt"
     n_features = len(FEATURES)
     n_target = len(TARGET)
-    # features, target = read_file(data_filename, FEATURES, TARGET)
     features_test, target_test = read_file(data_filename, FEATURES, TARGET)
-
-    # features_train, features_temp, target_train, target_temp = train_test_split(
-    #     features, target, test_size=hyperparameters["data_split"]["train_val_size"],
-    #     random_state=hyperparameters["data_split"]["random_state"])
-    #
-    # features_val, features_test, target_val, target_test = train_test_split(
-    #     features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
-    #     random_state=hyperparameters["data_split"]["random_state"])
 
     # Load Scalers
     scaler_features = joblib.load(f"scalers/scaler_features_{time}.joblib")
@@ -2032,12 +2023,12 @@ if __name__ == "__main__":
     # ----------------------------
     # Coverage test
 
-    interval_coverage(
-        flow=flow,
-        dataset=test_dataset,
-        levels=(0.50,0.68,0.90,0.95),
-        model_name=model_name
-    )
+    # interval_coverage(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     levels=(0.50,0.68,0.90,0.95),
+    #     model_name=model_name
+    # )
 
     # ----------------------------
     # Shuffle test
@@ -2110,7 +2101,9 @@ if __name__ == "__main__":
     # ----------------------------
     # Multimodality / Posterior Shape Visualization
 
-    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # with h5py.File(data_filename, "r") as f:
+    #     data = f["NuFindingStudies"][:]
+    #     df = pd.DataFrame(data)
     # nb1_nu_eta = df['NB1_nu_eta'].values
     # nb2_nu_eta = df['NB2_nu_eta'].values
     #
@@ -2143,31 +2136,35 @@ if __name__ == "__main__":
     # ----------------------------
     # Correlation Test
 
-    df_raw = pd.read_csv(data_filename, encoding_errors="ignore")
-
-    # Match test set indices
-    df_test_raw = df_raw.iloc[-len(target_test):]
-    true_eta_test = df_test_raw["True_nu_eta"].values
-    nb1_test = df_test_raw["NB1_nu_eta"].values
-    nb2_test = df_test_raw["NB2_nu_eta"].values
-    met_test = df_test_raw["MET"].values
-
-    correlation_test(
-        flow=flow,
-        dataset=test_dataset,
-        model_name=model_name,
-        nleadb_eta=nb1_test,
-        nsubleadb_eta=nb2_test,
-        met=met_test,
-        seed=42,
-        bins=80,
-        range_eta=(-5,5),
-    )
+    # with h5py.File(data_filename, "r") as f:
+    #     data = f["NuFindingStudies"][:]
+    #     df = pd.DataFrame(data)
+    #
+    # # Match test set indices
+    # df_test_raw = df.iloc[-len(target_test):]
+    # true_eta_test = df_test_raw["True_nu_eta"].values
+    # nb1_test = df_test_raw["NB1_nu_eta"].values
+    # nb2_test = df_test_raw["NB2_nu_eta"].values
+    # met_test = df_test_raw["MET"].values
+    #
+    # correlation_test(
+    #     flow=flow,
+    #     dataset=test_dataset,
+    #     model_name=model_name,
+    #     nleadb_eta=nb1_test,
+    #     nsubleadb_eta=nb2_test,
+    #     met=met_test,
+    #     seed=42,
+    #     bins=80,
+    #     range_eta=(-5,5),
+    # )
 
     # ----------------------------
     # Angle Comparison
 
-    df = pd.read_csv(data_filename,encoding_errors='ignore')
+    with h5py.File(data_filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
     nb1_nu_eta = df['NB1_nu_eta'].values
     nb2_nu_eta = df['NB2_nu_eta'].values
 
@@ -2188,7 +2185,9 @@ if __name__ == "__main__":
     # ----------------------------
     # Eta Comparison
 
-    # df = pd.read_csv(data_filename,encoding_errors='ignore')
+    # with h5py.File(data_filename, "r") as f:
+    #     data = f["NuFindingStudies"][:]
+    #     df = pd.DataFrame(data)
     # nb1_nu_eta = df['NB1_nu_eta'].values
     # nb2_nu_eta = df['NB2_nu_eta'].values
     #
