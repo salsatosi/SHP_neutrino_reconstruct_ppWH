@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
-from sklearn.model_selection import train_test_split
+import h5py
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -481,9 +481,9 @@ def reconstruct_diffusion_polarization(
 
 
 if __name__ == "__main__":
-    time = "20261026-222327"
+    time = "20261027-213319"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
 
     hyperparameter_file = f"models/hyperparameters_diff_{time}.json"
@@ -509,7 +509,9 @@ if __name__ == "__main__":
     ).to(device)
 
     # Load analytical solutions from DataFrame if available
-    df = pd.read_csv(data_filename, encoding_errors="ignore")
+    with h5py.File(data_filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
     df_test_raw = df.iloc[-len(target_test) :]
     nb1_nu_eta_test = df_test_raw["NB1_nu_eta"].values
     nb2_nu_eta_test = df_test_raw["NB2_nu_eta"].values

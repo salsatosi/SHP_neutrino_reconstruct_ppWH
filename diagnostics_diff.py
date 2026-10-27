@@ -2,9 +2,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, Subset
 import numpy as np
 import matplotlib.pyplot as plt
-import joblib
-import datetime
-from sklearn.model_selection import train_test_split
+import h5py
 from scipy.stats import kstest,pearsonr, spearmanr
 from matplotlib.colors import LogNorm
 import joblib
@@ -1187,7 +1185,7 @@ if __name__ == "__main__":
 
     time = "20261008-222146"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.csv"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
 
     hyperparameters = load_hyperparameters(
@@ -1215,7 +1213,9 @@ if __name__ == "__main__":
     ).to(device)
 
     # Load analytical solutions
-    df = pd.read_csv(data_filename, encoding_errors="ignore")
+    with h5py.File(data_filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
     nb1_eta = df["NB1_nu_eta"].values
     nb2_eta = df["NB2_nu_eta"].values
     met = df["MET"].values

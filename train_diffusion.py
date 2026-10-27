@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
+import h5py
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -118,8 +119,19 @@ def save_hyperparameters(hyperparameters, filename="hyperparameters_diff"):
 
 
 def read_file(filename, FEATURES, TARGET):
-    df = pd.read_csv(filename, encoding_errors="ignore")
-    for col in FEATURES[-5:]:
+    # df = pd.read_csv(filename, encoding_errors="ignore")
+    with h5py.File(filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
+
+    # df["Relative_Phi_Lep_Higgs"] = df['Higgs_phi'] - df['ChargedLep_Phi']
+    df["Relative_Phi_Lep_MET"] = df['MET_Phi'] - df['ChargedLep_Phi']
+    df["Relative_Phi_Lep_LeadBJet"] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
+    df["Relative_Phi_Lep_SubleadBJet"] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
+    df["Relative_Phi_Lep_SumLightJet"] = df['SumLightJets_phi'] - df['ChargedLep_Phi']
+
+
+    for col in FEATURES[-4:]:
         df[col] = np.arctan2(np.sin(df[col]), np.cos(df[col]))
 
     features_data = df[FEATURES].values
@@ -141,7 +153,6 @@ def split_data(features, target, hyperparameters):
     features_val = scaler_features.transform(features_val)
     target_train = scaler_target.fit_transform(target_train)
     target_val = scaler_target.transform(target_val)
-    joblib.dump(scaler_target, f"scalers/scaler_target_{time_str}.joblib")
     joblib.dump(
         scaler_features, f"scalers/scaler_features_diff_{time_str}.joblib"
     )
@@ -461,7 +472,7 @@ if __name__ == "__main__":
     n_target = len(TARGET)
 
     features, target = read_file(
-        "data/new_Input_WH_NeutrinoEtaFindingForTraining_4th_October2026.csv",
+        "data/new_Input_WH_NeutrinoEtaFindingForTraining_4th_October2026.h5",
         FEATURES,
         TARGET,
     )
