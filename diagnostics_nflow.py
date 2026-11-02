@@ -1550,8 +1550,8 @@ def angle_comparison(
     plot_vars = [
         ("costhetastar", r"$\cos\theta^*_{WH}$", (-1.0, 1.0)),
         ("costheta1", r"$\cos\theta_1$", (-1.0, 1.0)),
-        ("Phi1", r"$|\Phi_1|$", (0.0, np.pi)),
-        ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$", (0.0, np.pi)),
+        ("Phi1", r"$|\Phi_1|$ [rad]", (0.0, np.pi)),
+        ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$ [rad]", (0.0, np.pi)),
     ]
 
     print("\n" + "=" * 90)
@@ -1632,7 +1632,7 @@ def angle_comparison(
             histtype="stepfilled",
             alpha=0.45,
             color="royalblue",
-            label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.1f}$)",
+            label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.2f}$)",
         )
 
         if data_5050 is not None:
@@ -1650,7 +1650,7 @@ def angle_comparison(
                 ls="--",
                 lw=1.6,
                 color="crimson",
-                label=rf"50/50 ($\chi^2/\mathrm{{ndf}} = {r_chi2_50:.1f}$)",
+                label=rf"50/50 ($\chi^2/\mathrm{{ndf}} = {r_chi2_50:.2f}$)",
             )
 
         if data_minpz is not None:
@@ -1668,7 +1668,7 @@ def angle_comparison(
                 ls=":",
                 lw=1.8,
                 color="darkorange",
-                label=rf"Min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_pz:.1f}$)",
+                label=rf"Min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_pz:.2f}$)",
             )
 
         ax.set_xlabel(label, fontsize=12)
