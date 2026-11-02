@@ -885,7 +885,6 @@ def compare_eta_nu_distribution_diffusion(
     diffusion_model,
     features_test,
     target_test,
-    scaler_features,
     model_name,
     scaler_target=None,  # Joblib-loaded target scaler for inverse transform
     nb1_nu_eta=None,  # 1st quadratic solution
@@ -943,7 +942,6 @@ def compare_eta_nu_distribution_diffusion(
                 # Multiple stochastic posterior draws per event via DDPM (eta=1.0)
                 bx_rep = bx.repeat_interleave(num_samples, dim=0)
                 s = diffusion_model.sample_ddpm(bx_rep, eta=1.0)
-                diff_samples.append(s.cpu().numpy())
                 diff_samples.append(s.cpu().numpy())
 
             if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == len(loader):
@@ -1181,9 +1179,477 @@ def compare_eta_nu_distribution_diffusion(
     }
 
 
+def lorentz_boost(p4, beta):
+    """Boost a 4-momentum p4 = (px, py, pz, E) by velocity vector beta = (bx,
+
+    by, bz).
+
+    p4 shape: (N, 4) or (N, S, 4) beta shape: (N, 3) or (N, S, 3)
+    """
+    beta_sq = np.sum(beta**2, axis=-1, keepdims=True)  # beta^2
+    gamma = 1.0 / np.sqrt(np.maximum(1e-10, 1.0 - beta_sq))
+
+    p3 = p4[..., :3]
+    E = p4[..., 3:4]
+
+    # Lorentz boost formula along arbitrary 3-vector beta
+    beta_dot_p = np.sum(beta * p3, axis=-1, keepdims=True)
+
+    factor = np.where(
+        beta_sq > 1e-10, (gamma - 1.0) / np.maximum(beta_sq, 1e-10), 0.0
+    )
+    p3_boosted = p3 + factor * beta_dot_p * beta - gamma * E * beta
+    E_boosted = gamma * (E - beta_dot_p)
+
+    return np.concatenate([p3_boosted, E_boosted], axis=-1)
+
+
+def unit_vector(v):
+    norm = np.linalg.norm(v, axis=-1, keepdims=True)
+    return v / np.maximum(norm, 1e-9)
+
+
+def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
+    """Correctly computes angular observables in the WH Center-of-Mass frame
+
+    and W/H helicity rest frames according to the paper's definition.
+    """
+    # ----------------------------------------------------
+    # 1. Composite 4-momenta in Lab Frame (px, py, pz, E)
+    # ----------------------------------------------------
+    p4_w = p4_lep + p4_nu
+    p4_h = p4_b1 + p4_b2
+    p4_wh = p4_w + p4_h
+
+    # ----------------------------------------------------
+    # 2. Boost ALL particles to the WH Center-of-Mass Frame (X)
+    # (Note: beta is POSITIVE because lorentz_boost subtracts gamma*E*beta!)
+    # ----------------------------------------------------
+    beta_wh = p4_wh[:, :3] / p4_wh[:, 3:4]
+
+    p4_w_X = lorentz_boost(p4_w, beta_wh)
+    p4_h_X = lorentz_boost(p4_h, beta_wh)
+    p4_lep_X = lorentz_boost(p4_lep, beta_wh)
+    p4_nu_X = lorentz_boost(p4_nu, beta_wh)
+    p4_b1_X = lorentz_boost(p4_b1, beta_wh)
+    p4_b2_X = lorentz_boost(p4_b2, beta_wh)
+
+    p3_w_X = p4_w_X[:, :3]
+    p3_h_X = p4_h_X[:, :3]
+    u_w_X = unit_vector(p3_w_X)
+    u_h_X = unit_vector(p3_h_X)
+
+    # ----------------------------------------------------
+    # costhetastar: Direction of W in WH CoM frame vs. Beam Axis (z)
+    # ----------------------------------------------------
+    costhetastar = p3_w_X[:, 2] / np.maximum(
+        1e-9, np.linalg.norm(p3_w_X, axis=-1)
+    )
+    costhetastar = np.clip(costhetastar, -1.0, 1.0)
+
+    # ----------------------------------------------------
+    # costheta1: Lepton in W rest frame vs. W flight direction in WH frame
+    # ----------------------------------------------------
+    beta_w = p4_w[:, :3] / p4_w[:, 3:4]
+    p4_lep_in_W = lorentz_boost(p4_lep, beta_w)
+    u_lep_in_W = unit_vector(p4_lep_in_W[:, :3])
+
+    # Angle relative to W's direction of flight in the WH frame
+    costheta1 = np.sum(-u_lep_in_W * u_h_X, axis=-1)
+    costheta1 = np.clip(costheta1, -1.0, 1.0)
+
+    # ----------------------------------------------------
+    # Planes and Azimuthal Angles (All in WH CoM frame)
+    # ----------------------------------------------------
+    # Normal to W decay plane
+    normal1_X = unit_vector(np.cross(p4_lep_X[:, :3], p4_nu_X[:, :3]))
+
+    # Normal to H decay plane
+    normal2_X = unit_vector(np.cross(p4_b1_X[:, :3], p4_b2_X[:, :3]))
+
+    # Normal to production / scattering plane (Beam axis = [0, 0, 1])
+    beam_axis = np.zeros_like(u_w_X)
+    beam_axis[:, 2] = 1.0
+    normalSC_X = unit_vector(np.cross(beam_axis, u_w_X))
+
+    # --- Phi (Angle between W and H decay planes) ---
+    tmp_sgn_phi = np.sum(u_w_X * np.cross(normal1_X, normal2_X), axis=-1)
+    sgn_phi = np.sign(tmp_sgn_phi)
+    dot_12 = np.clip(np.sum(normal1_X * normal2_X, axis=-1), -1.0, 1.0)
+    Phi = sgn_phi * np.arccos(-dot_12)
+
+    # --- Phi1 (Angle between W decay plane and scattering plane) ---
+    tmp_sgn_phi1 = np.sum(u_w_X * np.cross(normal1_X, normalSC_X), axis=-1)
+    sgn_phi1 = np.sign(tmp_sgn_phi1)
+    dot_1sc = np.clip(np.sum(normal1_X * normalSC_X, axis=-1), -1.0, 1.0)
+    Phi1 = sgn_phi1 * np.arccos(dot_1sc)
+
+    # --- dphi_ll (Azimuthal separation between lepton and neutrino in WH frame) ---
+    phi_lep_X = np.arctan2(p4_lep_X[:, 1], p4_lep_X[:, 0])
+    phi_nu_X = np.arctan2(p4_nu_X[:, 1], p4_nu_X[:, 0])
+    dphi_ll = np.abs(
+        np.arctan2(np.sin(phi_lep_X - phi_nu_X), np.cos(phi_lep_X - phi_nu_X))
+    )
+
+    return {
+        "costhetastar": costhetastar,
+        "costheta1": costheta1,
+        "Phi": Phi,
+        "Phi1": Phi1,
+        "dphi_ll": dphi_ll,
+    }
+
+
+def angle_comparison(
+    diffusion_model,
+    features_test,
+    target_test,
+    scaler_features,
+    model_name,
+    scaler_target=None,  # Joblib-loaded target scaler for inverse transform
+    nb1_nu_eta=None,  # 1st quadratic solution
+    nb2_nu_eta=None,  # 2nd quadratic solution
+    batch_size=512,
+    num_samples=1,
+    bins=40,
+    seed=42,
+    sampling_steps=50,
+    device=None,
+):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
+    diffusion_model.eval()
+
+    # ----------------------------------------------------
+    # 1. Unscale features to physical units
+    # ----------------------------------------------------
+    feat_unscaled = scaler_features.inverse_transform(features_test)
+    n_events = len(target_test)
+
+    # Lepton kinematics (aligned along x-axis: phi_l = 0)
+    lep_pt = feat_unscaled[:, FEATURES.index("ChargedLep_pT")]
+    lep_eta = feat_unscaled[:, FEATURES.index("ChargedLep_Eta")]
+    # lep_e = feat_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
+    p4_lep = np.stack(
+        [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
+        axis=-1,
+    )
+
+    # MET kinematics
+    met = feat_unscaled[:, FEATURES.index("MET")]
+    phi_nu = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
+
+    # b-Jets kinematics
+    leadb_pt = feat_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = feat_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    leadb_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    # leadb_e = feat_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_e = leadb_pt * np.cosh(leadb_eta)
+    p4_b1 = np.stack(
+        [
+            leadb_pt * np.cos(leadb_phi),
+            leadb_pt * np.sin(leadb_phi),
+            leadb_pt * np.sinh(leadb_eta),
+            leadb_e,
+        ],
+        axis=-1,
+    )
+
+    subleadb_pt = feat_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = feat_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    subleadb_phi = feat_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+    # subleadb_e = feat_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_e = subleadb_pt * np.cosh(subleadb_eta)
+    p4_b2 = np.stack(
+        [
+            subleadb_pt * np.cos(subleadb_phi),
+            subleadb_pt * np.sin(subleadb_phi),
+            subleadb_pt * np.sinh(subleadb_eta),
+            subleadb_e,
+        ],
+        axis=-1,
+    )
+
+    true_eta = target_test.flatten()
+
+    def build_p4_nu(eta):
+        px = met * np.cos(phi_nu)
+        py = met * np.sin(phi_nu)
+        pz = met * np.sinh(eta)
+        e = met * np.cosh(eta)
+        return np.stack([px, py, pz, e], axis=-1)
+
+    # ----------------------------------------------------
+    # 2. Reconstruct Neutrino 4-Vectors
+    # ----------------------------------------------------
+    # (a) True MC
+    print("Computing True MC Angles...")
+    p4_nu_true = build_p4_nu(true_eta)
+    obs_true = compute_angles_vectorized(p4_lep, p4_nu_true, p4_b1, p4_b2)
+
+    # (b) Model prediction
+    print(
+        f"Sampling eta_nu from Diffusion Model on {device} (num_samples={num_samples})..."
+    )
+    diff_samples = []
+    features_tensor = torch.tensor(features_test, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for batch_idx, (bx,) in enumerate(loader):
+            bx = bx.to(device)
+
+            if num_samples == 1:
+                # Fast deterministic single-sample inference via DDIM (eta=0.0)
+                # sampling_steps=50 gives a 10x speedup with near-identical physics
+                s = diffusion_model.sample_ddim(bx, eta=0.0, sampling_steps=sampling_steps)
+                diff_samples.append(s.cpu().numpy())
+            else:
+                # Multiple stochastic posterior draws per event via DDPM (eta=1.0)
+                bx_rep = bx.repeat_interleave(num_samples, dim=0)
+                s = diffusion_model.sample_ddpm(bx_rep, eta=1.0)
+                diff_samples.append(s.cpu().numpy())
+
+            if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == len(loader):
+                print(f"  Processed {batch_idx + 1}/{len(loader)} batches...")
+
+    eta_diff_raw = np.concatenate(diff_samples, axis=0)
+    orig_shape = eta_diff_raw.shape
+    eta_diff = scaler_target.inverse_transform(
+        eta_diff_raw.reshape(-1, 1)
+    ).reshape(orig_shape)
+
+    if num_samples >1:
+        p4_lep_rep = np.repeat(p4_lep, num_samples, axis=0)
+        p4_b1_rep = np.repeat(p4_b1, num_samples, axis=0)
+        p4_b2_rep = np.repeat(p4_b2, num_samples, axis=0)
+        met_rep = np.repeat(met, num_samples, axis=0)
+        phi_nu_rep = np.repeat(phi_nu, num_samples, axis=0)
+    else:
+        p4_lep_rep = p4_lep
+        p4_b1_rep = p4_b1
+        p4_b2_rep = p4_b2
+        met_rep = met
+        phi_nu_rep = phi_nu
+
+    # Build neutrino and compute angles
+    px = met_rep * np.cos(phi_nu_rep)
+    py = met_rep * np.sin(phi_nu_rep)
+    pz = met_rep * np.sinh(eta_diff.flatten())
+    e = met_rep * np.cosh(eta_diff.flatten())
+    p4_nu_diff = np.stack([px, py, pz, e], axis=-1)
+
+    obs_diff = compute_angles_vectorized(
+        p4_lep_rep, p4_nu_diff, p4_b1_rep, p4_b2_rep
+    )
+
+
+    # (c) Baselines: Random 50/50 and min-|pz|
+    obs_minpz = None
+    obs_5050 = None
+
+    if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Min-|pz|
+        pz1 = np.abs(met * np.sinh(nb1_nu_eta))
+        pz2 = np.abs(met * np.sinh(nb2_nu_eta))
+        eta_minpz = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+        p4_nu_minpz = build_p4_nu(eta_minpz)
+        obs_minpz = compute_angles_vectorized(p4_lep, p4_nu_minpz, p4_b1, p4_b2)
+
+        # 50/50
+        rng = np.random.default_rng(seed=seed)
+        coin = rng.choice([True, False], size=n_events)
+        eta_5050 = np.where(coin, nb1_nu_eta, nb2_nu_eta)
+        p4_nu_5050 = build_p4_nu(eta_5050)
+        obs_5050 = compute_angles_vectorized(p4_lep, p4_nu_5050, p4_b1, p4_b2)
+
+    # ----------------------------------------------------
+    # Helper: Two-Sample Poisson Chi2
+    # ----------------------------------------------------
+    def compute_chi2_ndf(counts_test, counts_ref):
+        counts_test = np.asarray(counts_test, dtype=float)
+        counts_ref = np.asarray(counts_ref, dtype=float)
+
+        n_ref = np.sum(counts_ref)
+        n_test = np.sum(counts_test)
+        if n_ref == 0 or n_test == 0:
+            return np.nan, 0, np.nan
+
+        p_pooled = (counts_ref + counts_test) / (n_ref + n_test)
+        exp_ref = n_ref * p_pooled
+        exp_test = n_test * p_pooled
+
+        valid = (exp_ref >= 5.0) & (exp_test >= 5.0)
+        if np.sum(valid) <= 1:
+            return np.nan, 0, np.nan
+
+        chi2_ref = (counts_ref[valid] - exp_ref[valid]) ** 2 / exp_ref[valid]
+        chi2_test = (
+            counts_test[valid] - exp_test[valid]
+        ) ** 2 / exp_test[valid]
+
+        chi2 = np.sum(chi2_ref + chi2_test)
+        ndf = np.sum(valid) - 1
+        return chi2, ndf, chi2 / ndf
+
+    # ----------------------------------------------------
+    # 3. Calculate Chi2 and Plot in a 2x2 Grid
+    # ----------------------------------------------------
+    plot_vars = [
+        ("costhetastar", r"$\cos\theta^*_{WH}$", (-1.0, 1.0)),
+        ("costheta1", r"$\cos\theta_1$", (-1.0, 1.0)),
+        ("Phi1", r"$|\Phi_1|$ [rad]", (0.0, np.pi)),
+        ("dphi_ll", r"$\Delta\Phi(L, \bar{L})$ [rad]", (0.0, np.pi)),
+    ]
+
+    print("\n" + "=" * 90)
+    print(
+        f"{'Observable':<22} | {'Model Samples χ²/ndf':<20} | {'50/50 χ²/ndf':<18} | {'Min-|pz| χ²/ndf':<18}"
+    )
+    print("=" * 90)
+
+    # 2x2 Clean Subplot Grid
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9.5))
+    axes = axes.flatten()
+
+    for i, (key, label, rng) in enumerate(plot_vars):
+        # Extract data (take absolute value for Phi1 to avoid negative truncation!)
+        if key == "Phi1":
+            data_true = np.abs(obs_true[key])
+            data_diff = np.abs(obs_diff[key])
+            data_5050 = np.abs(obs_5050[key]) if obs_5050 else None
+            data_minpz = np.abs(obs_minpz[key]) if obs_minpz else None
+        else:
+            data_true = obs_true[key]
+            data_diff = obs_diff[key]
+            data_5050 = obs_5050[key] if obs_5050 else None
+            data_minpz = obs_minpz[key] if obs_minpz else None
+
+        # Filter NaNs from complex analytical solutions
+        data_true = data_true[~np.isnan(data_true)]
+        data_diff = data_diff[~np.isnan(data_diff)]
+
+        # Raw counts for chi2
+        raw_true, edges = np.histogram(data_true, bins=bins, range=rng)
+        raw_diff, _ = np.histogram(data_diff, bins=bins, range=rng)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+
+        _, _, r_chi2_f = compute_chi2_ndf(raw_diff, raw_true)
+
+        # Baseline Chi2
+        r_chi2_50 = np.nan
+        if data_5050 is not None:
+            raw_5050, _ = np.histogram(
+                data_5050[~np.isnan(data_5050)], bins=bins, range=rng
+            )
+            _, _, r_chi2_50 = compute_chi2_ndf(raw_5050, raw_true)
+
+        r_chi2_pz = np.nan
+        if data_minpz is not None:
+            raw_minpz, _ = np.histogram(
+                data_minpz[~np.isnan(data_minpz)], bins=bins, range=rng
+            )
+            _, _, r_chi2_pz = compute_chi2_ndf(raw_minpz, raw_true)
+
+        print(
+            f"{key:<22} | {r_chi2_f:<20.2f} | {r_chi2_50:<18.2f} | {r_chi2_pz:<18.2f}"
+        )
+
+        # Normalized densities for plotting
+        norm_true, _ = np.histogram(
+            data_true, bins=bins, range=rng, density=True
+        )
+        norm_diff, _ = np.histogram(
+            data_diff, bins=bins, range=rng, density=True
+        )
+
+        ax = axes[i]
+        ax.hist(
+            centers,
+            bins=edges,
+            weights=norm_true,
+            histtype="step",
+            lw=2.2,
+            color="black",
+            label="MC Truth",
+        )
+        ax.hist(
+            centers,
+            bins=edges,
+            weights=norm_diff,
+            histtype="stepfilled",
+            alpha=0.45,
+            color="royalblue",
+            label=rf"Model Samples ($\chi^2/\mathrm{{ndf}} = {r_chi2_f:.2f}$)",
+        )
+
+        if data_5050 is not None:
+            norm_5050, _ = np.histogram(
+                data_5050[~np.isnan(data_5050)],
+                bins=bins,
+                range=rng,
+                density=True,
+            )
+            ax.hist(
+                centers,
+                bins=edges,
+                weights=norm_5050,
+                histtype="step",
+                ls="--",
+                lw=1.6,
+                color="crimson",
+                label=rf"50/50 ($\chi^2/\mathrm{{ndf}} = {r_chi2_50:.2f}$)",
+            )
+
+        if data_minpz is not None:
+            norm_minpz, _ = np.histogram(
+                data_minpz[~np.isnan(data_minpz)],
+                bins=bins,
+                range=rng,
+                density=True,
+            )
+            ax.hist(
+                centers,
+                bins=edges,
+                weights=norm_minpz,
+                histtype="step",
+                ls=":",
+                lw=1.8,
+                color="darkorange",
+                label=rf"Min-$|p_z|$ ($\chi^2/\mathrm{{ndf}} = {r_chi2_pz:.2f}$)",
+            )
+
+        ax.set_xlabel(label, fontsize=12)
+        ax.set_ylabel("Normalized Density", fontsize=11)
+        ax.set_xlim(rng)
+        ax.legend(fontsize=8.5, loc="upper right")
+
+    print("=" * 90)
+
+    plt.suptitle(
+        r"Reconstruction of Angular Observables",
+        fontsize=14,
+        y=0.995,
+    )
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "obs_true": obs_true,
+        "obs_diff": obs_diff,
+        "obs_5050": obs_5050,
+        "obs_minpz": obs_minpz,
+    }
+
+
 if __name__ == "__main__":
 
-    time = "20261008-222146"
+    time = "20261016-211547"
     data_filename = (
         "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
@@ -1253,18 +1719,18 @@ if __name__ == "__main__":
     # ------------------------------------
     # correlation test
 
-    correlation_test_diffusion(
-        diffusion_model=diffusion_model,
-        dataset=dataset,
-        model_name=model_name,
-        nb1_eta=nb1_eta,
-        nb2_eta=nb2_eta,
-        met=met,
-        scaler_target=scaler_target,
-        num_samples=10,
-        batch_size=512,
-        range_eta=(-5,5)
-    )
+    # correlation_test_diffusion(
+    #     diffusion_model=diffusion_model,
+    #     dataset=dataset,
+    #     model_name=model_name,
+    #     nb1_eta=nb1_eta,
+    #     nb2_eta=nb2_eta,
+    #     met=met,
+    #     scaler_target=scaler_target,
+    #     num_samples=10,
+    #     batch_size=512,
+    #     range_eta=(-5,5)
+    # )
 
     # ------------------------------------
     # Plot event posterior
@@ -1298,3 +1764,18 @@ if __name__ == "__main__":
     #     bins=60,
     #     range_eta=(-5.0, 5.0),
     # )
+
+    # ------------------------------------
+    # Angular observables
+
+    angle_comparison(
+        diffusion_model=diffusion_model,
+        features_test=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        scaler_target=scaler_target,
+        model_name=model_name,
+        nb1_nu_eta=nb1_eta,
+        nb2_nu_eta=nb2_eta,
+        num_samples=1,
+    )
