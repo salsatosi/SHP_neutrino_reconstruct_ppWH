@@ -900,6 +900,181 @@ def invariant_mass_reconstruction(
     print(f"Flow Reconstructed mWH Peak: {mode_mwh_flow:.2f} GeV")
 
 
+def WH_mass_reconstruction(
+    flow,
+    features_test_scaled,
+    target_test,
+    scaler_features,
+    model_name,
+    num_samples=50,
+    batch_size=512,
+    num_bins = 120
+):
+    flow.load_state_dict(torch.load(model_name, map_location=device))
+    flow.eval()
+
+    # 1. Unscale features to physical units (GeV, radians)
+    features_unscaled = scaler_features.inverse_transform(features_test_scaled)
+
+    # 2. Extract kinematics
+    lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
+    lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
+    # lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+    lep_e = lep_pt * np.cosh(lep_eta)
+
+    met = features_unscaled[:, FEATURES.index("MET")]
+    phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
+
+    leadb_pt = features_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = features_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    # leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_e = leadb_pt * np.cosh(leadb_eta)
+    leadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    p4_leadb = np.stack(
+        [
+            leadb_pt * np.cos(leadb_phi),
+            leadb_pt * np.sin(leadb_phi),
+            leadb_pt * np.sinh(leadb_eta),
+            leadb_e,
+        ],
+        axis=-1,
+    )
+
+    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    # subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_e = subleadb_pt * np.cosh(subleadb_eta)
+    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+
+    p4_subleadb = np.stack(
+        [
+            subleadb_pt * np.cos(subleadb_phi),
+            subleadb_pt * np.sin(subleadb_phi),
+            subleadb_pt * np.sinh(subleadb_eta),
+            subleadb_e,
+        ],
+        axis=-1,
+    )
+
+    p4_h = p4_leadb + p4_subleadb
+
+    true_eta = target_test.flatten()
+
+    # 3. Base 4-momenta for Lepton (phi_lep = 0) and Higgs
+    p4_lep = np.stack(
+        [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
+        axis=-1,
+    )
+
+    # Helper function to compute invariant mass from eta_nu
+    def compute_masses(eta_nu):
+        if eta_nu.ndim == 1:
+            px_nu = met * np.cos(phi_nu)
+            py_nu = met * np.sin(phi_nu)
+            pz_nu = met * np.sinh(eta_nu)
+            e_nu = met * np.cosh(eta_nu)
+
+            p4_l = p4_lep
+            p4_higgs = p4_h
+
+        elif eta_nu.ndim == 2:
+            n_s = eta_nu.shape[1]
+            px_nu = np.repeat((met * np.cos(phi_nu))[:, None], n_s, axis=1)
+            py_nu = np.repeat((met * np.sin(phi_nu))[:, None], n_s, axis=1)
+            pz_nu = met[:, None] * np.sinh(eta_nu)
+            e_nu = met[:, None] * np.cosh(eta_nu)
+
+            p4_l = p4_lep[:, None, :]
+            p4_higgs = p4_h[:, None, :]
+
+        else:
+            raise ValueError("eta_nu must be 1D or 2D array")
+
+        p4_nu = np.stack([px_nu, py_nu, pz_nu, e_nu], axis=-1)
+
+        # W Boson invariant mass
+        p4_w = p4_l + p4_nu
+
+        # Total WH invariant mass
+        p4_wh = p4_w + p4_higgs
+        m_wh_sq = (
+                p4_wh[..., 3] ** 2
+                - (p4_wh[..., 0] ** 2 + p4_wh[..., 1] ** 2 + p4_wh[..., 2] ** 2)
+        )
+        m_wh = np.sqrt(np.maximum(0, m_wh_sq))
+
+        return m_wh
+
+    # 4. Compute True Masses
+    m_wh_true = compute_masses(true_eta)
+
+    # 5. Compute Flow-Sampled Masses
+    flow_samples = []
+    features_tensor = torch.tensor(features_test_scaled, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for (batch_x,) in loader:
+            batch_x = batch_x.to(device)
+            s = flow.sample(num_samples=num_samples, context=batch_x)
+            flow_samples.append(s.squeeze(-1).cpu().numpy())
+
+    eta_samples = np.concatenate(flow_samples, axis=0)
+    m_wh_sample = compute_masses(eta_samples)
+    m_wh_sampled_flat = m_wh_sample.flatten()
+
+    # --- Compute Modes ---
+    min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
+    wh_range = (min_wh, max_wh)
+    print(wh_range)
+    print(np.shape(m_wh_sampled_flat))
+    print(np.shape(m_wh_sampled_flat[(m_wh_sampled_flat > min_wh)
+                                     &(m_wh_sampled_flat < max_wh)]))
+    print(f'Bin Width: {(max_wh-min_wh)/num_bins} GeV')
+
+    mode_mwh_true = compute_mode(m_wh_true, bins=num_bins, data_range=wh_range)
+    mode_mwh_flow = compute_mode(m_wh_sampled_flat, bins=num_bins, data_range=wh_range)
+
+    # 6. Plotting
+
+    # --- Plot mWH ---
+    plt.hist(
+        m_wh_true,
+        bins=num_bins,
+        range=wh_range,
+        density=True,
+        histtype="step",
+        linewidth=2,
+        color="black",
+        label=rf"True $\eta_\nu$ (Mode: {mode_mwh_true:.2f} GeV)",
+    )
+    plt.hist(
+        m_wh_sampled_flat,
+        bins=num_bins,
+        range=wh_range,
+        density=True,
+        alpha=0.5,
+        color="darkorange",
+        label=rf"Flow Samples (Mode: {mode_mwh_flow:.2f} GeV)",
+    )
+    plt.xlabel(r"$m_{WH}$ [GeV]", fontsize=11)
+    plt.ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
+    plt.title(r"Total $WH$ Invariant Mass Reconstruction [Normalising Flow]", fontsize=12)
+    plt.legend(fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary statistics
+    print("\nInvariant Mass Reconstruction")
+    print("-" * 50)
+    print(f"True mWH Peak (Mode)       : {mode_mwh_true:.2f} GeV")
+    print(f"Flow Reconstructed mWH Peak: {mode_mwh_flow:.2f} GeV")
+    print(f"Difference: {abs(mode_mwh_flow-mode_mwh_true):.2f} GeV")
+
+
 def correlation_test(
     flow,
     dataset,
@@ -1674,7 +1849,8 @@ def angle_comparison(
         ax.set_xlabel(label, fontsize=12)
         ax.set_ylabel("Normalized Density", fontsize=11)
         ax.set_xlim(rng)
-        ax.legend(fontsize=8.5, loc="upper right")
+        ax.set_ylim(0,0.9)
+        ax.legend(fontsize=8.5, loc="upper left",frameon=False)
 
     print("=" * 90)
 
@@ -1995,7 +2171,7 @@ def compare_eta_nu_distribution(
 
 if __name__ == "__main__":
     time = '20261016-201026'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2135,7 +2311,7 @@ if __name__ == "__main__":
 
     # ----------------------------
     # Correlation Test
-
+    #
     # with h5py.File(data_filename, "r") as f:
     #     data = f["NuFindingStudies"][:]
     #     df = pd.DataFrame(data)
@@ -2202,4 +2378,18 @@ if __name__ == "__main__":
     #     num_samples=10,  # 10 posterior draws per event gives clean statistics
     #     bins=60,
     #     range_eta=(-5.0, 5.0),
+    # )
+
+    # ----------------------------
+    # WH mass reconstruction
+
+    # WH_mass_reconstruction(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     num_samples=500,
+    #     batch_size=512,
+    #     num_bins=120
     # )

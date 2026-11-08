@@ -347,7 +347,7 @@ def reconstruct_flow_polarization(
             linestyle="--",
             linewidth=1.8,
             color="crimson",
-            label=rf"Baseline (50/50) ($f_0 = {res_5050['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.1f}$)",
+            label=rf"Baseline (50/50) ($f_0 = {res_5050['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_5050:.2f}$)",
         )
 
     if cos_minpz is not None:
@@ -362,7 +362,7 @@ def reconstruct_flow_polarization(
             linestyle=":",
             linewidth=2.0,
             color="darkorange",
-            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_minpz['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.1f}$)",
+            label=rf"Baseline min-$|p_z|$ ($f_0 = {res_minpz['fit'][0]:.3f}$, $\chi^2/\mathrm{{ndf}} = {r_chi2_minpz:.2f}$)",
         )
 
     ax_main.set_ylabel(
@@ -371,7 +371,8 @@ def reconstruct_flow_polarization(
     ax_main.set_title(
         r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$) [Normalising Flow]", fontsize=13
     )
-    ax_main.legend(fontsize=9.0, loc="upper right")
+    ax_main.set_ylim(0, 1)
+    ax_main.legend(fontsize=8.5, loc="upper left")
 
     # Ratio Panel (Method / Truth)
     centers = 0.5 * (edges[:-1] + edges[1:])
@@ -445,7 +446,7 @@ def reconstruct_flow_polarization(
 
 
 if __name__ == "__main__":
-    time = '20261027-233637'
+    time = '20261016-201026'
     data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
