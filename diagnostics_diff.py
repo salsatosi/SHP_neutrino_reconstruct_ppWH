@@ -506,10 +506,10 @@ def invariant_mass_reconstruction_diffusion(
         axis=-1,
     )
 
-    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadB_pT")]
-    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadB_Eta")]
-    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadB_E")]
-    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadB")]
+    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
     p4_subleadb = np.stack(
         [subleadb_pt * np.cos(subleadb_phi), subleadb_pt * np.sin(subleadb_phi), subleadb_pt * np.sinh(subleadb_eta), subleadb_e],
         axis=-1,
@@ -635,7 +635,7 @@ def invariant_mass_reconstruction_diffusion(
         r"$W$ Boson Invariant Mass Reconstruction [Diffusion Model]",
         fontsize=13,
     )
-    axes[0].legend(fontsize=9, loc="upper right")
+    axes[0].legend(fontsize=8, loc="upper right")
 
     # --- Plot mWH ---
     axes[1].hist(
@@ -694,6 +694,233 @@ def invariant_mass_reconstruction_diffusion(
         "m_wh_true": m_wh_true,
         "m_wh_diff": m_wh_diff,
         "mode_mw_diff": mode_mw_diff,
+        "mode_mwh_diff": mode_mwh_diff,
+    }
+
+
+def WH_mass_reconstruction_diffusion(
+    diffusion_model,
+    features_test,
+    target_test,
+    scaler_features,
+    model_name,
+    scaler_target=None,  # Pass scaler_target used in training
+    batch_size=1024,
+    num_bins=120,
+    device=None,
+    nb1_nu_eta=None,
+    nb2_nu_eta=None,
+    seed=42
+):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    diffusion_model.load_state_dict(torch.load(model_name, map_location=device))
+    diffusion_model.eval()
+
+    # 1. Unscale features to physical units (GeV, radians)
+    features_unscaled = scaler_features.inverse_transform(features_test)
+
+    # 2. Extract kinematics
+    lep_pt = features_unscaled[:, FEATURES.index("ChargedLep_pT")]
+    lep_eta = features_unscaled[:, FEATURES.index("ChargedLep_Eta")]
+    lep_e = features_unscaled[:, FEATURES.index("ChargedLep_E")]
+
+    met = features_unscaled[:, FEATURES.index("MET")]
+    phi_nu = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_MET")]
+
+    leadb_pt = features_unscaled[:, FEATURES.index("LeadBJet_pT")]
+    leadb_eta = features_unscaled[:, FEATURES.index("LeadBJet_Eta")]
+    leadb_e = features_unscaled[:, FEATURES.index("LeadBJet_E")]
+    leadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_LeadBJet")]
+    p4_leadb = np.stack(
+        [leadb_pt*np.cos(leadb_phi), leadb_pt*np.sin(leadb_phi), leadb_pt * np.sinh(leadb_eta), leadb_e],
+        axis=-1,
+    )
+
+    subleadb_pt = features_unscaled[:, FEATURES.index("SubLeadBJet_pT")]
+    subleadb_eta = features_unscaled[:, FEATURES.index("SubLeadBJet_Eta")]
+    subleadb_e = features_unscaled[:, FEATURES.index("SubLeadBJet_E")]
+    subleadb_phi = features_unscaled[:, FEATURES.index("Relative_Phi_Lep_SubleadBJet")]
+    p4_subleadb = np.stack(
+        [subleadb_pt * np.cos(subleadb_phi), subleadb_pt * np.sin(subleadb_phi), subleadb_pt * np.sinh(subleadb_eta), subleadb_e],
+        axis=-1,
+    )
+
+    p4_h = p4_leadb + p4_subleadb
+
+    true_eta = target_test.flatten()
+
+    # 3. Base 4-momenta for Lepton (phi_lep = 0) and Higgs
+    p4_lep = np.stack(
+        [lep_pt, np.zeros_like(lep_pt), lep_pt * np.sinh(lep_eta), lep_e],
+        axis=-1,
+    )
+
+    # Helper function to compute invariant mass from eta_nu
+    def compute_masses(eta_nu):
+        px_nu = met * np.cos(phi_nu)
+        py_nu = met * np.sin(phi_nu)
+        pz_nu = met * np.sinh(eta_nu)
+        e_nu = met * np.cosh(eta_nu)
+
+        p4_nu = np.stack([px_nu, py_nu, pz_nu, e_nu], axis=-1)
+
+        # W Boson invariant mass: m^2 = E^2 - |p|^2
+        p4_w = p4_lep + p4_nu
+
+
+        # Total WH invariant mass
+        p4_wh = p4_w + p4_h
+        m_wh_sq = (
+            p4_wh[..., 3] ** 2
+            - (p4_wh[..., 0] ** 2 + p4_wh[..., 1] ** 2 + p4_wh[..., 2] ** 2)
+        )
+        m_wh = np.sqrt(np.maximum(0, m_wh_sq))
+
+        return m_wh
+
+    # 4. Compute True Masses
+    m_wh_true = compute_masses(true_eta)
+
+    # 5. Compute Diffusion Deterministic (DDIM eta=0) Predictions
+    # This acts as the clean point estimator (equivalent to MAP)
+    print(
+        f"Reconstructing masses using Deterministic DDIM (eta=0.0) on {device}..."
+    )
+    diff_preds = []
+    features_tensor = torch.tensor(features_test, dtype=torch.float32)
+    loader = DataLoader(
+        TensorDataset(features_tensor), batch_size=batch_size, shuffle=False
+    )
+
+    with torch.no_grad():
+        for batch_idx, (batch_x,) in enumerate(loader):
+            batch_x = batch_x.to(device)
+
+            pred = diffusion_model.sample_ddim(batch_x)
+
+            diff_preds.append(pred.cpu().numpy())
+
+            if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == len(loader):
+                print(f"  Processed {batch_idx + 1}/{len(loader)} batches...")
+
+    eta_diff = np.concatenate(diff_preds, axis=0).flatten()
+
+    # Invert target scaling back to physical pseudorapidity
+    if scaler_target is not None:
+        eta_diff = scaler_target.inverse_transform(
+            eta_diff.reshape(-1, 1)
+        ).flatten()
+
+    # Compute reconstructed masses
+    m_wh_diff = compute_masses(eta_diff)
+
+    eta_5050 = None
+    eta_minpz = None
+    n_events = len(true_eta)
+
+    if nb1_nu_eta is not None and nb2_nu_eta is not None:
+        # Baseline 1: Random 50/50 Choice
+        rng = np.random.default_rng(seed=seed)
+        coin_flip = rng.choice([True, False], size=n_events)
+        eta_5050_raw = np.where(coin_flip, nb1_nu_eta, nb2_nu_eta)
+        valid_5050 = ~(np.isnan(eta_5050_raw) | np.isinf(eta_5050_raw))
+        eta_5050 = eta_5050_raw[valid_5050]
+
+        # Baseline 2: Minimum |pz|
+        pz1 = np.abs(met * np.sinh(nb1_nu_eta))
+        pz2 = np.abs(met * np.sinh(nb2_nu_eta))
+        eta_minpz_raw = np.where(pz1 <= pz2, nb1_nu_eta, nb2_nu_eta)
+        valid_minpz = ~(np.isnan(eta_minpz_raw) | np.isinf(eta_minpz_raw))
+        eta_minpz = eta_minpz_raw[valid_minpz]
+    m_wh_5050 = compute_masses(eta_5050)
+    m_wh_minpz = compute_masses(eta_minpz)
+
+
+    # 6. Mode & Range Calculations
+    min_wh, max_wh = np.percentile(m_wh_true, [1, 99])
+    wh_range = (min_wh, max_wh)
+    print(wh_range)
+    print(f"Bin width: {(max_wh-min_wh)/num_bins}")
+
+
+    mode_mwh_true = compute_mode(m_wh_true, bins=num_bins, data_range=wh_range)
+    mode_mwh_diff = compute_mode(m_wh_diff, bins=num_bins, data_range=wh_range)
+    mode_mwh_5050 = compute_mode(m_wh_5050, bins=num_bins, data_range=wh_range)
+    mode_mwh_minpz = compute_mode(m_wh_minpz, bins=num_bins, data_range=wh_range)
+
+    # 7. Plotting
+
+    # --- Plot mWH ---
+    plt.hist(
+        m_wh_true,
+        bins=num_bins,
+        range=wh_range,
+        density=True,
+        histtype="step",
+        linewidth=2.2,
+        color="black",
+        label=rf"True $\eta_\nu$ (Peak: {mode_mwh_true:.2f} GeV)",
+    )
+    plt.hist(
+        m_wh_diff,
+        bins=num_bins,
+        range=wh_range,
+        density=True,
+        alpha=0.5,
+        color="royalblue",
+        label=rf"Diffusion DDIM ($\eta=0$) (Peak: {mode_mwh_diff:.2f} GeV)",
+    )
+    if eta_5050 is not None:
+        plt.hist(
+            m_wh_5050,
+            bins=num_bins,
+            range=wh_range,
+            histtype="step",
+            density=True,
+            linestyle="--",
+            linewidth=1.8,
+            color="crimson",
+            label=rf"Baseline 50/50 (Peak: {mode_mwh_5050:.2f} GeV)",
+        )
+
+    if eta_minpz is not None:
+        plt.hist(
+            m_wh_minpz,
+            bins=num_bins,
+            range=wh_range,
+            histtype="step",
+            density=True,
+            linestyle=":",
+            linewidth=2.0,
+            color="darkorange",
+            label=rf"Baseline min-$|p_z|$ (Peak: {mode_mwh_minpz:.2f} GeV)",
+        )
+    plt.xlabel(r"$m_{WH}$ [GeV]", fontsize=12)
+    plt.ylabel("Normalized Density [GeV$^{-1}$]", fontsize=11)
+    plt.title(
+        r"Total $WH$ Invariant Mass Reconstruction [Diffusion Model]",
+        fontsize=13,
+    )
+    plt.legend(fontsize=8,frameon=True)
+
+    plt.tight_layout()
+    plt.show()
+
+
+    print("\n" + "=" * 55)
+    print("INVARIANT MASS RECONSTRUCTION BENCHMARK (DIFFUSION)")
+    print("=" * 55)
+    print(f"True mWH Peak (Mode)             : {mode_mwh_true:.2f} GeV")
+    print(f"Diffusion Reconstructed mWH Peak : {mode_mwh_diff:.2f} GeV")
+    print(f"Baseline 50/50 mWH Peak : {mode_mwh_5050:.2f} GeV")
+    print(f"Baseline min-$|p_z|$ mWH Peak : {mode_mwh_minpz:.2f} GeV")
+    print("=" * 55)
+
+    return {
+        "m_wh_true": m_wh_true,
+        "m_wh_diff": m_wh_diff,
         "mode_mwh_diff": mode_mwh_diff,
     }
 
@@ -1626,8 +1853,9 @@ def angle_comparison(
 
         ax.set_xlabel(label, fontsize=12)
         ax.set_ylabel("Normalized Density", fontsize=11)
+        ax.set_ylim(0,0.9)
         ax.set_xlim(rng)
-        ax.legend(fontsize=8.5, loc="upper right")
+        ax.legend(fontsize=8, loc="upper left",frameon=False)
 
     print("=" * 90)
 
@@ -1651,7 +1879,7 @@ if __name__ == "__main__":
 
     time = "20261016-211547"
     data_filename = (
-        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
+        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
 
     hyperparameters = load_hyperparameters(
@@ -1779,3 +2007,19 @@ if __name__ == "__main__":
         nb2_nu_eta=nb2_eta,
         num_samples=1,
     )
+
+    # ------------------------------------
+    # WH mass reconstruction
+
+#     WH_mass_reconstruction_diffusion(
+#         diffusion_model=diffusion_model,
+#         features_test=features_test,
+#         target_test=target_test,
+#         scaler_features=scaler_features,
+#         scaler_target=scaler_target,  # Joblib-loaded scaler
+#         model_name=model_name,
+#         batch_size=1024,
+#         num_bins=120,
+#         nb1_nu_eta=nb1_eta,
+#         nb2_nu_eta=nb2_eta,
+# )

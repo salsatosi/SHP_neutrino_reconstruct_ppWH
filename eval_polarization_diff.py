@@ -407,7 +407,8 @@ def reconstruct_diffusion_polarization(
         r"$W$ Boson Polarization Reconstruction ($\cos\theta^*$) [Diffusion Model]",
         fontsize=13,
     )
-    ax_main.legend(fontsize=9.0, loc="upper right")
+    ax_main.set_ylim(0, 1)
+    ax_main.legend(fontsize=8.5, loc="upper left")
 
     centers = 0.5 * (edges[:-1] + edges[1:])
 
@@ -481,7 +482,7 @@ def reconstruct_diffusion_polarization(
 
 
 if __name__ == "__main__":
-    time = "20261027-213319"
+    time = "20261016-211547"
     data_filename = (
         "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
