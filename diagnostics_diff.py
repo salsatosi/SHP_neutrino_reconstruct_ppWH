@@ -1,3 +1,8 @@
+'''
+Diagnostics tests including statistical tests and physics reconstruction tests
+Uncomment corresponding function to perform the test
+'''
+
 import torch
 from torch.utils.data import TensorDataset, DataLoader, Subset
 import numpy as np

@@ -518,7 +518,6 @@ if __name__ == "__main__":
     nb2_nu_eta_test = df_test_raw["NB2_nu_eta"].values
 
     # Run polarization evaluation
-    # Note: num_samples=1 draws 1 sample per event, which is fast and gives the full population histogram.
     res = reconstruct_diffusion_polarization(
         diffusion_model=diffusion_model,
         features_test_scaled=features_test,
