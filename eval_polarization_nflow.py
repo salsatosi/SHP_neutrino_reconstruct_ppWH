@@ -431,6 +431,7 @@ def reconstruct_flow_polarization(
     ax_ratio.legend(fontsize=7.5, loc="lower right", ncol=3)
 
     plt.tight_layout()
+    plt.savefig('polarisation.png',transparent=True)
     plt.show()
 
     return {
@@ -447,7 +448,7 @@ def reconstruct_flow_polarization(
 
 if __name__ == "__main__":
     time = '20261016-201026'
-    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
+    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -456,16 +457,8 @@ if __name__ == "__main__":
     n_features = len(FEATURES)
     n_target = len(TARGET)
 
-    # features, target = read_file(data_filename, FEATURES, TARGET)
-    features_test, target_test = read_file(data_filename, FEATURES, TARGET)
 
-    # features_train, features_temp, target_train, target_temp = train_test_split(
-    #     features, target, test_size=hyperparameters["data_split"]["train_val_size"],
-    #     random_state=hyperparameters["data_split"]["random_state"])
-    #
-    # features_val, features_test, target_val, target_test = train_test_split(
-    #     features_temp, target_temp, test_size=hyperparameters["data_split"]["val_test_size"],
-    #     random_state=hyperparameters["data_split"]["random_state"])
+    features_test, target_test = read_file(data_filename, FEATURES, TARGET)
 
 
     # Load Scalers

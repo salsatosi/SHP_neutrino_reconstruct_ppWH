@@ -1,3 +1,10 @@
+'''
+Diagnostics tests including statistical tests and physics reconstruction tests.
+Uncomment corresponding function to perform test.
+
+'''
+
+
 from train_nflow import (
     device, FEATURES, TARGET, read_file, normalizing_flow, load_hyperparameters)
 import torch
@@ -2171,7 +2178,7 @@ def compare_eta_nu_distribution(
 
 if __name__ == "__main__":
     time = '20261016-201026'
-    data_filename = 'data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
+    data_filename = 'data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5'
     hyperparameter_file = f"models/hyperparameters_nflow_{time}.json"
     hyperparameters = load_hyperparameters(hyperparameter_file)
     # torch.manual_seed(hyperparameters["random_seed"])
@@ -2298,16 +2305,16 @@ if __name__ == "__main__":
     # ----------------------------
     # Invariant Mass Reconstruction Test
 
-    # invariant_mass_reconstruction(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     num_samples=500,
-    #     batch_size=512,
-    #     num_bins=120
-    # )
+    invariant_mass_reconstruction(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        num_samples=500,
+        batch_size=512,
+        num_bins=120
+    )
 
     # ----------------------------
     # Correlation Test
@@ -2338,25 +2345,25 @@ if __name__ == "__main__":
     # ----------------------------
     # Angle Comparison
 
-    with h5py.File(data_filename, "r") as f:
-        data = f["NuFindingStudies"][:]
-        df = pd.DataFrame(data)
-    nb1_nu_eta = df['NB1_nu_eta'].values
-    nb2_nu_eta = df['NB2_nu_eta'].values
-
-    angle_comparison(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        nb1_nu_eta=nb1_nu_eta,
-        nb2_nu_eta=nb2_nu_eta,
-        batch_size=512,
-        num_grid=500,
-        range_eta=(-5, 5),
-        bins=40,
-    )
+    # with h5py.File(data_filename, "r") as f:
+    #     data = f["NuFindingStudies"][:]
+    #     df = pd.DataFrame(data)
+    # nb1_nu_eta = df['NB1_nu_eta'].values
+    # nb2_nu_eta = df['NB2_nu_eta'].values
+    #
+    # angle_comparison(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     nb1_nu_eta=nb1_nu_eta,
+    #     nb2_nu_eta=nb2_nu_eta,
+    #     batch_size=512,
+    #     num_grid=500,
+    #     range_eta=(-5, 5),
+    #     bins=40,
+    # )
 
     # ----------------------------
     # Eta Comparison
