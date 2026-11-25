@@ -12,6 +12,17 @@ import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 import h5py
+from pathlib import Path
+
+project_dir = Path.cwd()
+new_folder = project_dir / "images"
+new_folder.mkdir(parents=True, exist_ok=True)
+new_folder = project_dir / "data"
+new_folder.mkdir(parents=True, exist_ok=True)
+new_folder = project_dir / "models"
+new_folder.mkdir(parents=True, exist_ok=True)
+new_folder = project_dir / "scalers"
+new_folder.mkdir(parents=True, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -45,6 +56,36 @@ DEFAULT_HYPERPARAMETERS = {
     "scheduler": {"type": "cosine", "eta_min": 1e-6},
 }
 
+# 25 features
+# FEATURES = [
+#     "ChargedLep_Charge",
+#     "ChargedLep_E",
+#     "ChargedLep_Eta",
+#     "ChargedLep_pT",
+#     "HT",
+#     "Higgs_E",
+#     "Higgs_eta",
+#     "Higgs_pT",
+#     "LeadBJet_E",
+#     "LeadBJet_Eta",
+#     "LeadBJet_pT",
+#     "MET",
+#     "MET_Sig",
+#     "SubLeadBJet_E",
+#     "SubLeadBJet_Eta",
+#     "SubLeadBJet_pT",
+#     "NLightJets",
+#     "SumLightJets_E",
+#     "SumLightJets_Pt",
+#     "SumLightJets_eta",
+#     "Relative_Phi_Lep_Higgs",
+#     "Relative_Phi_Lep_MET",
+#     "Relative_Phi_Lep_LeadBJet",
+#     "Relative_Phi_Lep_SubleadBJet",
+#     "Relative_Phi_Lep_SumLightJet",
+# ]
+
+# 21 features
 FEATURES = [
     "ChargedLep_Charge",
     "ChargedLep_E",
@@ -73,32 +114,21 @@ FEATURES = [
     "Relative_Phi_Lep_SumLightJet",
 ]
 
+# 13 features
 # FEATURES = [
 #     "ChargedLep_Charge",
-#     # "ChargedLep_E",
 #     "ChargedLep_Eta",
 #     "ChargedLep_pT",
 #     "HT",
-#     # "Higgs_E",
-#     # "Higgs_eta",
-#     # "Higgs_pT",
-#     # "LeadBJet_E",
 #     "LeadBJet_Eta",
 #     "LeadBJet_pT",
 #     "MET",
 #     "MET_Sig",
-#     # "SubLeadBJet_E",
 #     "SubLeadBJet_Eta",
 #     "SubLeadBJet_pT",
-#     # "NLightJets",
-#     # "SumLightJets_E",
-#     # "SumLightJets_Pt",
-#     # "SumLightJets_eta",
-#     # "Relative_Phi_Lep_Higgs",
 #     "Relative_Phi_Lep_MET",
 #     "Relative_Phi_Lep_LeadBJet",
 #     "Relative_Phi_Lep_SubleadBJet",
-#     # "Relative_Phi_Lep_SumLightJet",
 # ]
 
 TARGET = ["True_nu_eta"]
@@ -124,15 +154,30 @@ def read_file(filename, FEATURES, TARGET):
         data = f["NuFindingStudies"][:]
         df = pd.DataFrame(data)
 
-    # df["Relative_Phi_Lep_Higgs"] = df['Higgs_phi'] - df['ChargedLep_Phi']
-    df["Relative_Phi_Lep_MET"] = df['MET_Phi'] - df['ChargedLep_Phi']
-    df["Relative_Phi_Lep_LeadBJet"] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
-    df["Relative_Phi_Lep_SubleadBJet"] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
-    df["Relative_Phi_Lep_SumLightJet"] = df['SumLightJets_phi'] - df['ChargedLep_Phi']
 
+    if len(FEATURES) == 21:
+        df["Relative_Phi_Lep_MET"] = df['MET_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_LeadBJet"] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_SubleadBJet"] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_SumLightJet"] = df['SumLightJets_phi'] - df['ChargedLep_Phi']
+        for col in FEATURES[-4:]:
+            df[col] = np.arctan2(np.sin(df[col]), np.cos(df[col]))
 
-    for col in FEATURES[-4:]:
-        df[col] = np.arctan2(np.sin(df[col]), np.cos(df[col]))
+    elif len(FEATURES) == 25:
+        df["Relative_Phi_Lep_Higgs"] = df['Higgs_phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_MET"] = df['MET_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_LeadBJet"] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_SubleadBJet"] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_SumLightJet"] = df['SumLightJets_phi'] - df['ChargedLep_Phi']
+        for col in FEATURES[-5:]:
+            df[col] = np.arctan2(np.sin(df[col]), np.cos(df[col]))
+
+    elif len(FEATURES) == 13:
+        df["Relative_Phi_Lep_MET"] = df['MET_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_LeadBJet"] = df['LeadBJet_Phi'] - df['ChargedLep_Phi']
+        df["Relative_Phi_Lep_SubleadBJet"] = df['SubLeadBJet_Phi'] - df['ChargedLep_Phi']
+        for col in FEATURES[-3:]:
+            df[col] = np.arctan2(np.sin(df[col]), np.cos(df[col]))
 
     features_data = df[FEATURES].values
     target_data = df[TARGET].values
