@@ -18,6 +18,7 @@ Most of the statistical tests and physics reconstruction tests are performed on 
 - Correlation test
 - Invariant mass reconstruction
 - Angular observable comparison
-To run a specific test, you may want to uncomment the corresponding function in the lower main code part, and comment out other irrelevant tests to save running time.
+
+To run a specific test in diagnostics.py, you may want to uncomment the corresponding function in the lower main code part, and comment out other irrelevant tests to save running time.
 
 The reconstruction of polarisation distribution is performed on eval_polarization.py. The permutation features importance test is performed on feature_significance_test.py.
