@@ -1,8 +1,8 @@
 # Reconstruction of Neutrino Momentum and $W$-Boson Kinematics in $pp\rightarrow WH\rightarrow(\ell\nu)(b\bar{b})$ Events Using Generative Machine Learning
 
 This repository consists of two branches:
-master: codes for normalising flow
-diffusion: codes for diffusion models
+- master: codes for normalising flow
+- diffusion: codes for diffusion models
 
 Training and testing data available on [salsatosi/SHP_neutrino_reconstruct_ppWH](https://huggingface.co/datasets/salsatosi/SHP_neutrino_reconstruct_ppWH) on HuggingFace. Save these datasets in your .root_folder/data.
 
