@@ -1507,9 +1507,11 @@ def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
     beta_w = p4_w[:, :3] / p4_w[:, 3:4]
     p4_lep_in_W = lorentz_boost(p4_lep, beta_w)
     u_lep_in_W = unit_vector(p4_lep_in_W[:, :3])
+    p4_h_in_W = lorentz_boost(p4_h_X, beta_w)
+    u_h_in_W = unit_vector(p4_h_in_W[:, :3])
 
     # Angle relative to W's direction of flight in the WH frame
-    costheta1 = np.sum(-u_lep_in_W * u_h_X, axis=-1)
+    costheta1 = np.sum(-u_lep_in_W * u_h_in_W, axis=-1)
     costheta1 = np.clip(costheta1, -1.0, 1.0)
 
     # ----------------------------------------------------
@@ -2305,16 +2307,16 @@ if __name__ == "__main__":
     # ----------------------------
     # Invariant Mass Reconstruction Test
 
-    invariant_mass_reconstruction(
-        flow=flow,
-        features_test_scaled=features_test,
-        target_test=target_test,
-        scaler_features=scaler_features,
-        model_name=model_name,
-        num_samples=500,
-        batch_size=512,
-        num_bins=120
-    )
+    # invariant_mass_reconstruction(
+    #     flow=flow,
+    #     features_test_scaled=features_test,
+    #     target_test=target_test,
+    #     scaler_features=scaler_features,
+    #     model_name=model_name,
+    #     num_samples=500,
+    #     batch_size=512,
+    #     num_bins=120
+    # )
 
     # ----------------------------
     # Correlation Test
@@ -2345,25 +2347,25 @@ if __name__ == "__main__":
     # ----------------------------
     # Angle Comparison
 
-    # with h5py.File(data_filename, "r") as f:
-    #     data = f["NuFindingStudies"][:]
-    #     df = pd.DataFrame(data)
-    # nb1_nu_eta = df['NB1_nu_eta'].values
-    # nb2_nu_eta = df['NB2_nu_eta'].values
-    #
-    # angle_comparison(
-    #     flow=flow,
-    #     features_test_scaled=features_test,
-    #     target_test=target_test,
-    #     scaler_features=scaler_features,
-    #     model_name=model_name,
-    #     nb1_nu_eta=nb1_nu_eta,
-    #     nb2_nu_eta=nb2_nu_eta,
-    #     batch_size=512,
-    #     num_grid=500,
-    #     range_eta=(-5, 5),
-    #     bins=40,
-    # )
+    with h5py.File(data_filename, "r") as f:
+        data = f["NuFindingStudies"][:]
+        df = pd.DataFrame(data)
+    nb1_nu_eta = df['NB1_nu_eta'].values
+    nb2_nu_eta = df['NB2_nu_eta'].values
+
+    angle_comparison(
+        flow=flow,
+        features_test_scaled=features_test,
+        target_test=target_test,
+        scaler_features=scaler_features,
+        model_name=model_name,
+        nb1_nu_eta=nb1_nu_eta,
+        nb2_nu_eta=nb2_nu_eta,
+        batch_size=512,
+        num_grid=500,
+        range_eta=(-5, 5),
+        bins=40,
+    )
 
     # ----------------------------
     # Eta Comparison
