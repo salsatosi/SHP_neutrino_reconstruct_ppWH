@@ -1485,9 +1485,11 @@ def compute_angles_vectorized(p4_lep, p4_nu, p4_b1, p4_b2):
     beta_w = p4_w[:, :3] / p4_w[:, 3:4]
     p4_lep_in_W = lorentz_boost(p4_lep, beta_w)
     u_lep_in_W = unit_vector(p4_lep_in_W[:, :3])
+    p4_h_in_W = lorentz_boost(p4_h_X, beta_w)
+    u_h_in_W = unit_vector(p4_h_in_W[:, :3])
 
     # Angle relative to W's direction of flight in the WH frame
-    costheta1 = np.sum(-u_lep_in_W * u_h_X, axis=-1)
+    costheta1 = np.sum(-u_lep_in_W * u_h_in_W, axis=-1)
     costheta1 = np.clip(costheta1, -1.0, 1.0)
 
     # ----------------------------------------------------
@@ -1884,7 +1886,7 @@ if __name__ == "__main__":
 
     time = "20261016-211547"
     data_filename = (
-        "data/new_Input_WTH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
+        "data/new_Input_WLH_NeutrinoEtaFindingEvaluation_4th_October2026.h5"
     )
 
     hyperparameters = load_hyperparameters(
